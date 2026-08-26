@@ -34,18 +34,24 @@ every lesson feels consistent regardless of who or what drafted it.
   rule-of-three padding, no hedging where a direct claim is warranted.
   Say the thing.
 
-## Diagrams (Mermaid)
+## Diagrams (Mermaid and D2)
 
-- **Match diagram type to content**: `graph`/`flowchart` for
-  architecture and request flow, `classDiagram` for LLD class design,
-  `stateDiagram-v2` for lifecycle/state machines, `sequenceDiagram` for
-  worked-example walkthroughs and request traces, `erDiagram` for
-  database schema.
+- **Match diagram type to content**: `graph`/`flowchart` (Mermaid) or a
+  plain shapes-and-connections D2 diagram for architecture and request
+  flow, `classDiagram`/`shape: class` for LLD class design,
+  `stateDiagram-v2` (same shapes-and-connections technique in D2 — no
+  dedicated D2 state shape exists) for lifecycle/state machines,
+  `sequenceDiagram`/`shape: sequence_diagram` for worked-example
+  walkthroughs and request traces, `erDiagram`/`shape: sql_table` (per
+  entity, with `constraint: primary_key`/`foreign_key`) for database
+  schema.
 - **Label edges with what flows across them** when it's not obvious —
   "seat hold (TTL)" on the arrow into Redis, not a bare unlabeled line.
-- **One diagram, one concern.** Don't combine request-flow and
-  data-model in a single diagram — split into two labeled panels
-  instead of cramming.
+- **One diagram, one concern, kept small.** Don't combine request-flow
+  and data-model in a single diagram — split into two labeled panels
+  instead of cramming. Prefer several small, focused diagrams (2-5
+  nodes each) over one diagram carrying a whole section's explanatory
+  weight — see "Content-format standard" below.
 - **Every diagram gets a one-sentence caption** explaining what it shows
   and why it's here — not just a title restating the diagram type.
 - **State machines show every transition, including the "back" edges**
@@ -54,6 +60,59 @@ every lesson feels consistent regardless of who or what drafted it.
 - **Redraw, never copy** a reference source's diagram (this repeats
   `CLAUDE.md`'s existing rule) — this section is about how to redraw it
   *well*, not just differently.
+
+### D2 diagrams (architecture/network, class, sequence, ER)
+
+D2 diagrams (used via the `<D2Diagram>` MDX component — the default
+engine for all new and retrofitted case-study content going forward;
+Mermaid's `<DiagramPanel>` stays available and is still correct for
+existing lessons not yet migrated) set color explicitly per node via
+`style.fill`/`style.stroke`/`style.font-color`, rather than relying on
+automatic keyword classification the way Mermaid diagrams do. Use these
+values consistently so diagrams read as one system:
+
+| Role | Fill (light) | Fill (dark) | Use for |
+|---|---|---|---|
+| client | `#3b6fd6` | `#6d93e8` | browsers, mobile apps, end users |
+| network | `#5b4fbf` | `#9c93e0` | CDN, gateway, load balancer, waiting room |
+| service | `#0e7c86` | `#34c7b8` | application services, workers |
+| cache | `#b8722a` | `#e8a659` | Redis, in-memory caches |
+| datastore | `#b23a48` | `#f87171` | databases, persistent stores |
+| queue | `#4b5262` | `#9ba3b4` | message queues, event streams |
+
+Always pair a colored fill with `style.font-color: "#ffffff"` — every
+role color above is dark/saturated enough that white label text is the
+only choice that stays legible. Reference `lib/diagram-icons.ts`'s
+`DIAGRAM_ICONS` map for the matching icon per role rather than sourcing
+a new one per lesson. Local icon data URIs must be quoted in D2 source
+(`icon: "data:image/svg+xml;base64,..."`) — an unquoted value breaks
+D2's parser on the `:`/`+`/`=` characters inside the base64 payload.
+
+## Content-format standard (all new and retrofitted lessons)
+
+Applies on top of every rule above, tightening the bar for the
+case-study expansion and retrofit pass (2026-08-27) and everything
+after it:
+
+- **More diagrams per lesson, and more granular ones.** Where a section
+  explains 3-4 related ideas, pair each idea with its own small diagram
+  (2-5 nodes) rather than one large diagram carrying the whole
+  section's explanatory weight. A lesson with 4-5 diagrams total is the
+  floor, not the target.
+- **More granular topic coverage, not just reformatted prose.** A
+  deep-dive that could cover one mechanism should cover the 2-3
+  mechanisms a real interview conversation would actually branch into
+  (e.g., a caching deep-dive should also touch invalidation strategy
+  and cache stampede, not just cache-aside as one paragraph).
+- **Default to bullets and tables; paragraphs are the exception.** A
+  paragraph is the deliberate choice for narrative motivation and
+  worked-example sequences specifically — everything else
+  (requirements, comparisons, mechanism lists, API surfaces) defaults to
+  a bullet list, a `CompareTable`, or a small diagram, in that order of
+  preference, before falling back to prose.
+- **"To the point" text.** Every sentence that survives should carry a
+  fact, a number, or a decision — no throat-clearing, no restating the
+  heading in prose form before the bullets that already say it.
 
 ## Quiz questions (inline checks + recap quiz)
 
