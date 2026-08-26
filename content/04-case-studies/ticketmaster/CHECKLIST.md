@@ -7,7 +7,7 @@ with the output format amended by
 [docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md](../../../docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md)
 (`hld.html`/`lld.html` → `hld.mdx`/`lld.mdx`; content plan unchanged).
 
-Status: HLD not started, LLD not started. See
+Status: HLD built (`hld.mdx`), LLD not started. See
 [SYLLABUS.md](../../../SYLLABUS.md) / [04-case-studies/SYLLABUS.md](../SYLLABUS.md)
 (CS-08) for build priority — this checklist is a plan, not a built lesson.
 
@@ -48,59 +48,59 @@ the same show in the same second.
 
 ### 1. Problem framing
 
-- [ ] The on-sale stampede framed as the defining challenge
-- [ ] Explain why this is a consistency-over-availability problem during
+- [x] The on-sale stampede framed as the defining challenge
+- [x] Explain why this is a consistency-over-availability problem during
       checkout
 
 ### 2. Requirements & capacity estimate
 
-- [ ] Reference the functional/non-functional requirements above
-- [ ] Back-of-envelope math for the scale numbers (~1M concurrent users,
+- [x] Reference the functional/non-functional requirements above
+- [x] Back-of-envelope math for the scale numbers (~1M concurrent users,
       ~100k seat-view req/s, ~10k write TPS)
 
 ### 3. Core content — architecture diagram
 
-- [ ] Mermaid diagram of the request flow: client → API gateway →
+- [x] Mermaid diagram of the request flow: client → API gateway →
       search/catalog service → seat inventory service →
       booking/reservation service → payment service → notification
       service
-- [ ] Redis for seat holds
-- [ ] Message queue for confirmation/notification
-- [ ] Per-service datastores
+- [x] Redis for seat holds
+- [x] Message queue for confirmation/notification
+- [x] Per-service datastores
 
 ### 4. Core content — deep dives
 
-- [ ] Seat-hold mechanism: Redis TTL lock + virtual queue in front of
+- [x] Seat-hold mechanism: Redis TTL lock + virtual queue in front of
       seat selection (what Ticketmaster's real system uses)
-- [ ] Double-booking prevention: distributed lock + DB-level optimistic
+- [x] Double-booking prevention: distributed lock + DB-level optimistic
       version check as defense-in-depth (belt and suspenders)
-- [ ] Stampede handling: virtual waiting room, why it's better than
+- [x] Stampede handling: virtual waiting room, why it's better than
       letting 100k requests hit inventory directly
-- [ ] Search/catalog scaling: caching, read replicas, CDN for event pages
-- [ ] Booking→payment flow as a saga: hold → charge → confirm, with
+- [x] Search/catalog scaling: caching, read replicas, CDN for event pages
+- [x] Booking→payment flow as a saga: hold → charge → confirm, with
       timeout-triggered rollback if payment doesn't complete in time
 
 ### 5. Trade-offs
 
-- [ ] Optimistic lock vs pessimistic lock vs distributed lock
+- [x] Optimistic lock vs pessimistic lock vs distributed lock
       (Redis/Zookeeper) vs virtual queue: when each is the right call
 
 ### 6. Worked example
 
-- [ ] Sequence diagram tracing two users contending for the same seat:
+- [x] Sequence diagram tracing two users contending for the same seat:
       one succeeds, one is rejected cleanly
 
 ### 7. Interview angle
 
-- [ ] Follow-up: partial/group booking of adjacent seats
-- [ ] Follow-up: refund/cancellation flow
-- [ ] Follow-up: what happens if payment fails after the hold expires
+- [x] Follow-up: partial/group booking of adjacent seats
+- [x] Follow-up: refund/cancellation flow
+- [x] Follow-up: what happens if payment fails after the hold expires
 
 ### 8. Practice & Self-Check
 
-- [ ] Recap quiz on locking strategies and the consistency/availability
+- [x] Recap quiz on locking strategies and the consistency/availability
       trade-off
-- [ ] Open challenge: "design the seat-hold expiry and cleanup
+- [x] Open challenge: "design the seat-hold expiry and cleanup
       mechanism" with rubric
 
 ## LLD Checklist (`lld.mdx`)
@@ -178,5 +178,64 @@ the same show in the same second.
 
 ## Completeness Pass Log
 
-Not yet run — fill in when `hld.mdx`/`lld.mdx` are built, per
-CLAUDE.md's "After writing a lesson" rule.
+### `hld.mdx` (2026-08-26)
+
+Walked every HLD checklist item above against the finished lesson; all are
+covered and ticked `[x]`. Notes:
+
+- **Problem framing**: stampede framed as the defining challenge in the
+  opening + "Problem framing" section; consistency-over-availability
+  explained inline via CAP theorem (flagged `HLD-01` concept-dependency).
+- **Requirements & capacity estimate**: functional/non-functional
+  requirements listed verbatim from this checklist; back-of-envelope math
+  derives ~100k read/s and ~10k write/s from the 1M-concurrent-user figure,
+  plus the 10:1 (drop) vs 100:1 (ordinary day) read:write distinction.
+- **Architecture diagram**: one Mermaid flowchart covers client → CDN/API
+  gateway → virtual queue → search/catalog service → seat inventory
+  service → booking/reservation service → payment service → message queue
+  → notification service, with Redis (seat holds) and per-service
+  datastores (catalog read replicas, booking DB with version column)
+  labeled on their edges.
+- **Deep dives**: all five covered as their own subsections — seat-hold
+  mechanism (Redis `SET NX EX`), double-booking defense-in-depth (Redis +
+  DB version check), stampede handling (virtual waiting room, with its own
+  comparison diagram), search/catalog scaling (CDN, cache-aside, read
+  replicas, cache stampede), and the booking→payment saga (own sequence
+  diagram with timeout rollback).
+- **Trade-offs**: optimistic vs pessimistic vs distributed lock (Redis vs
+  ZooKeeper) vs virtual queue covered as a comparison table plus prose,
+  each naming what it's traded against.
+- **Worked example**: dedicated sequence diagram of Alice/Bob contending
+  for seat A12, one succeeding via Redis `NX`, one rejected before
+  reaching the database.
+- **Interview angle**: all three follow-ups covered (group booking of
+  adjacent seats, cancellation/refund flow, payment-succeeds-after-hold-
+  expired). Refund *policy* itself stays out of scope per this checklist's
+  own "Explicitly Out of Scope" line — only the seat-release/payment-
+  reversal shape is covered, which is what the follow-up is actually
+  probing for in an interview.
+- **Practice & Self-Check**: 7 recap `QuizItem`s spanning locking
+  strategies and the consistency/availability trade-off, plus the open
+  challenge ("design the seat-hold expiry and cleanup mechanism") with a
+  5-item independently-checkable `Rubric` (which renders the self-score
+  band automatically — `Rubric` composes `SelfScoreBand` internally, so
+  the lesson doesn't call `SelfScoreBand` directly; confirmed by reading
+  `components/lesson/Rubric.tsx`).
+- Also wove in 4 inline "check yourself" `QuizItem`s after major concepts
+  (consistency trade-off, seat-hold mechanism, double-booking
+  defense-in-depth, stampede handling, saga rollback — 5 total across the
+  body) beyond the closing recap quiz, per the enhanced lesson template.
+
+**Nothing dropped.** All 5 concept-lesson links this lesson would normally
+make (`HLD-01`, `HLD-03`, `HLD-06`, `HLD-07`, `HLD-10`, per
+`content/04-case-studies/SYLLABUS.md`'s CS-08 dependency list) are written
+inline instead, each flagged with an `HTML` comment
+(`<!-- concept-dependency: HLD-XX not yet built, explained inline -->`) for
+a future pass to swap in real links once those concept lessons exist, per
+the ruling in `docs/superpowers/plans/TRACKER.md`.
+
+Verified rendering at `/case-studies/ticketmaster/hld` via `pnpm dev` +
+Playwright: page renders with no console errors, all 4 Mermaid diagrams
+render as SVG (not raw text), quiz reveal/hide works, and the rubric's
+checkbox interactions update the self-score band live. Checked in both
+light and dark theme.
