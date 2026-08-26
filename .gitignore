@@ -1,4 +1,6 @@
 .vscode/
+.claude/
+.playwright-mcp/
 
 # dependencies
 /node_modules
