@@ -17,7 +17,15 @@ export async function renderD2(source: string): Promise<RenderD2Result> {
       ...compiled.renderOptions,
       pad: 40,
     });
-    return { svg };
+    // D2 always draws a full-canvas background <rect> tagged "fill-N7"
+    // (its own convention for the theme's canvas-background element,
+    // stable across all built-in themes) as the first shape. Strip only
+    // that element so the diagram stays transparent and inherits the
+    // surrounding panel's theme-aware background (bg-card) instead of a
+    // hardcoded white rect that reads as a stray white box in dark mode
+    // — matches how Mermaid's SVGs already behave.
+    const transparentSvg = svg.replace(/<rect[^>]*class="[^"]*fill-N7[^"]*"[^>]*\/>/, "");
+    return { svg: transparentSvg };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { error: message };

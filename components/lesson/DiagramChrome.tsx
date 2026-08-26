@@ -30,6 +30,24 @@ function injectDiagram(container: HTMLDivElement | null, svgMarkup: string | nul
   if (!svg) return;
   svg.classList.add("diagram-animate");
   applyDiagramRoleClasses(svg);
+
+  // D2's output <svg> carries a viewBox but no width/height attributes
+  // (unlike Mermaid's, which sets its own inline max-width) — without a
+  // cap, a plain block-level <svg> with only a viewBox stretches to fill
+  // 100% of its container's width. For a tall/narrow diagram (D2 defaults
+  // to top-to-bottom layout) that means a huge height, since the aspect
+  // ratio is preserved: confirmed live, a 218x480 diagram in a ~1100px
+  // panel rendered ~2600px tall, showing only its first node on screen.
+  // Cap max-width to the diagram's own authored pixel width so it only
+  // ever shrinks (for narrow viewports), never stretches past its
+  // natural size — the same effect Mermaid gets automatically.
+  const viewBox = svg.getAttribute("viewBox");
+  const intrinsicWidth = viewBox ? Number(viewBox.split(/\s+/)[2]) : NaN;
+  if (Number.isFinite(intrinsicWidth) && intrinsicWidth > 0) {
+    svg.style.maxWidth = `${intrinsicWidth}px`;
+  }
+  svg.style.width = "100%";
+  svg.style.height = "auto";
 }
 
 function DiagramToolbar({
