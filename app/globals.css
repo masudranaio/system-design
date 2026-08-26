@@ -134,3 +134,155 @@ h6,
   font-family: var(--font-mono), ui-monospace, "SFMono-Regular", monospace;
   text-wrap: balance;
 }
+
+@media (prefers-reduced-motion: no-preference) {
+  /*
+   * !important required: mermaid's embedded per-instance <style> sets
+   * `.edge-pattern-solid { stroke-dasharray: 0; }` (ID-scoped, beats any
+   * class selector here) — confirmed live via getComputedStyle, without
+   * it the dash animation runs but stroke-dasharray computes to 0px, so
+   * the line stays visually solid despite the animation technically
+   * playing.
+   */
+  .diagram-animate .edgePaths path {
+    stroke-dasharray: 6 4 !important;
+    animation: diagram-flow 2.5s linear infinite;
+  }
+}
+
+@keyframes diagram-flow {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+
+.diagram-animate .node {
+  transition:
+    transform 150ms ease,
+    filter 150ms ease;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.diagram-animate .node:hover {
+  transform: scale(1.02);
+  filter: brightness(1.05);
+}
+
+/*
+ * Role-color selectors, confirmed against live-rendered output (mermaid
+ * v11, theme "base"): flowchart node shapes are NOT consistently
+ * <rect>/<polygon>/<circle> — mermaid renders "basic" (rounded rect) and
+ * cylinder-style (database/queue) nodes as a <path>, while only some
+ * shapes use <rect>. Both tags carry the shared class "basic
+ * label-container", so `.basic` is the reliable selector; the bare tag
+ * names are kept as a defensive fallback for shapes not yet seen in this
+ * repo's content (e.g. decision diamonds).
+ *
+ * Specificity is deliberately balanced between the generic-default tier
+ * and the per-role tier (same class count in each selector) so that,
+ * with the generic block listed first, the per-role block that follows
+ * wins ties via source order — a role-classified node still gets its
+ * role color instead of falling back to the generic default.
+ *
+ * `!important` is required on every fill/stroke below: mermaid embeds
+ * its own <style> tag inside each rendered SVG scoped by a per-instance
+ * ID (`#diagram-<useId()> .node rect, ... path { fill: ...; stroke: ...
+ * }`, confirmed live in devtools). An ID selector (specificity 1,0,0)
+ * always beats any number of class selectors from this external
+ * stylesheet regardless of source order, and the ID is randomized per
+ * render so we can never structurally out-specify it — without
+ * `!important` every rule below was confirmed (via getComputedStyle) to
+ * be silently overridden by mermaid's own default fill/stroke, i.e. no
+ * role color or dark-mode adaptation was actually reaching the page.
+ */
+
+/*
+ * Generic default (no diagram-role-* match, e.g. plain "service" nodes):
+ * mermaid bakes literal light-theme colors into the SVG at render time
+ * (see DiagramPanel.tsx's initMermaid comment — its khroma-based color
+ * engine can't consume CSS custom properties), so without this rule
+ * default nodes would stay light-themed even in dark mode.
+ */
+.diagram-animate .node .basic,
+.diagram-animate .node rect,
+.diagram-animate .node polygon,
+.diagram-animate .node circle,
+.diagram-animate .node path {
+  fill: color-mix(in srgb, var(--color-brand) 18%, var(--color-surface)) !important;
+  stroke: var(--color-brand) !important;
+}
+
+.diagram-animate .diagram-role-client .basic,
+.diagram-animate .diagram-role-client rect,
+.diagram-animate .diagram-role-client polygon,
+.diagram-animate .diagram-role-client circle,
+.diagram-animate .diagram-role-client path {
+  fill: color-mix(in srgb, #3b6fd6 20%, var(--color-surface)) !important;
+  stroke: #3b6fd6 !important;
+}
+
+.diagram-animate .diagram-role-network .basic,
+.diagram-animate .diagram-role-network rect,
+.diagram-animate .diagram-role-network polygon,
+.diagram-animate .diagram-role-network circle,
+.diagram-animate .diagram-role-network path {
+  fill: color-mix(in srgb, var(--color-accent-info) 20%, var(--color-surface)) !important;
+  stroke: var(--color-accent-info) !important;
+}
+
+.diagram-animate .diagram-role-cache .basic,
+.diagram-animate .diagram-role-cache rect,
+.diagram-animate .diagram-role-cache polygon,
+.diagram-animate .diagram-role-cache circle,
+.diagram-animate .diagram-role-cache path {
+  fill: color-mix(in srgb, var(--color-accent-warn) 20%, var(--color-surface)) !important;
+  stroke: var(--color-accent-warn) !important;
+}
+
+.diagram-animate .diagram-role-datastore .basic,
+.diagram-animate .diagram-role-datastore rect,
+.diagram-animate .diagram-role-datastore polygon,
+.diagram-animate .diagram-role-datastore circle,
+.diagram-animate .diagram-role-datastore path {
+  fill: color-mix(in srgb, var(--color-state-booked) 18%, var(--color-surface)) !important;
+  stroke: var(--color-state-booked) !important;
+}
+
+.diagram-animate .diagram-role-queue .basic,
+.diagram-animate .diagram-role-queue rect,
+.diagram-animate .diagram-role-queue polygon,
+.diagram-animate .diagram-role-queue circle,
+.diagram-animate .diagram-role-queue path {
+  stroke-dasharray: 4 2 !important;
+}
+
+/*
+ * Node label text legibility, confirmed live (a dark-theme-only bug the
+ * fill/stroke overrides above introduced): mermaid renders flowchart
+ * labels as HTML (`.nodeLabel` spans inside a foreignObject, not SVG
+ * <text>), and bakes their color as the same literal khroma-safe
+ * #14171f used for primaryTextColor in DiagramPanel.tsx's initMermaid.
+ * Once node backgrounds go dark via the rules above, that baked-dark
+ * text became near-illegible against them — confirmed by screenshot.
+ * `color` (not `fill`) is the relevant property for this HTML content;
+ * `!important` for the same ID-scoped embedded-style reason as every
+ * rule above.
+ *
+ * Scoped to `.node .nodeLabel` specifically, NOT bare `.nodeLabel` —
+ * mermaid reuses the exact same "nodeLabel" class for subgraph/cluster
+ * headings (e.g. "Edge layer") and edge labels, confirmed live via
+ * outerHTML. Their backgrounds (a cluster's bounding rect, an edge
+ * label's pill) are NOT touched by any rule in this file and stay
+ * mermaid's hardcoded white in both themes — forcing their text to the
+ * dark-mode ink color would put light text on a still-white background,
+ * which is itself a legibility regression (confirmed live, reverted).
+ * `.node .nodeLabel` only reaches labels actually nested inside a real
+ * `g.node` — clusters and edge-label groups are siblings, not
+ * descendants, of any node, so this can't cross-match them.
+ */
+.diagram-animate .node .nodeLabel,
+.diagram-animate .node .nodeLabel * {
+  color: var(--color-ink) !important;
+  fill: var(--color-ink) !important;
+}
