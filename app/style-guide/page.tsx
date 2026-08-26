@@ -2,6 +2,7 @@ import { SectionTracker } from "@/components/lesson/SectionTracker";
 import { QuizItem } from "@/components/lesson/QuizItem";
 import { Rubric } from "@/components/lesson/Rubric";
 import { DiagramPanel } from "@/components/lesson/DiagramPanel";
+import { D2Diagram } from "@/components/lesson/D2Diagram";
 
 export default function StyleGuidePage() {
   return (
@@ -17,6 +18,26 @@ export default function StyleGuidePage() {
         title="Sample request flow"
         type="architecture"
         chart={"graph LR\n  Client --> Gateway --> Service"}
+      />
+
+      <D2Diagram
+        title="Sample D2 request flow"
+        type="architecture"
+        chart={`
+client: Client {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+gateway: API Gateway {
+  style.fill: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+service: Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+client -> gateway -> service
+`}
       />
 
       <QuizItem
