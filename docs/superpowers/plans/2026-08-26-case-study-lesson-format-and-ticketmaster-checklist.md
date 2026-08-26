@@ -2,6 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status: Completed** (all 4 tasks executed; see commits `c2abfdf`,
+`1b8a755`). Left unedited below as the historical record of what was
+built and why — two things have since changed and are **not** reflected
+in the task text below:
+- Output format: `hld.html`/`lld.html` → `hld.mdx`/`lld.mdx`, per
+  [2026-08-26-nextjs-mdx-app-migration-design.md](../specs/2026-08-26-nextjs-mdx-app-migration-design.md).
+- Paths: `04-case-studies/...` and `03-low-level-design/...` → `content/04-case-studies/...`
+  and `content/03-low-level-design/...`, per the same spec's folder migration.
+
+The checkboxes below were never checked off during execution (tracked via
+commits instead) and are left as-is.
+
 **Goal:** Land the checklist-first case-study workflow as a durable
 project rule in CLAUDE.md, and produce Ticketmaster's `CHECKLIST.md` as
 the concrete first instance — no HTML lessons are built by this plan.
