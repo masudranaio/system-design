@@ -24,6 +24,16 @@ Status: `[ ]` not started, `[~]` in progress, `[x]` done.
 | CS-06 | Amazon Locker | lld | hld — city-wide locker network, availability tracking | LLD-01–05 | [x] |
 | CS-07 | Splitwise | hld | lld — expense/balance model classes and schema | HLD-01, 07; LLD-01–06 | [ ] |
 | CS-08 | Ticketmaster | hld | lld — booking/seat/event schema and class design | HLD-01, 03, 06, 07, 10; LLD-01–06 | [x] |
+| CS-09 | Ride-Sharing (Uber-style) | hld | lld — trip/driver/rider entity design, trip state machine, matching-service class design | HLD-01, 03, 06, 08, 10; LLD-01–06 | [ ] |
+| CS-10 | Netflix (Video Streaming) | hld | lld — watch-progress/resume-state class design, content-catalog schema | HLD-01, 06, 07, 09, 10; LLD-01–06 | [ ] |
+| CS-11 | Food Panda (Food Delivery) | hld | lld — order/restaurant/courier state machine, matching-algorithm class design | HLD-01, 03, 06, 08, 10; LLD-01–06 | [ ] |
+| CS-12 | Event Tracking System (log/analytics pipeline) | lld | hld — distributed ingestion/aggregation at scale (promoted from "Logging Service" below) | LLD-01–06 | [ ] |
+| CS-13 | Notification Service (email/SMS/push) | lld | hld — multi-provider fan-out and failover at scale | LLD-01–06 | [ ] |
+
+Promoted from the extended list below into this priority table:
+Ride-Sharing (was "Uber / Ride-Sharing"), Event Tracking System (was
+"Logging Service"). Netflix, Food Panda, and Notification Service are
+new additions, not previously in either list.
 
 ## Extended list (scope for later, added as picked up)
 
@@ -33,23 +43,25 @@ Status: `[ ]` not started, `[~]` in progress, `[x]` done.
 | Twitter / News Feed | hld | lld — Tweet/Feed model classes, ranking service |
 | Chat / WhatsApp | hld | lld — message/delivery-status state machine |
 | YouTube | hld | lld — video/encoding pipeline classes, playback state |
-| Uber / Ride-Sharing | hld | lld — ride/driver/rider entity design, trip state machine |
 | Dropbox | hld | lld — file/chunk versioning classes, sync conflict resolution |
 | Instagram | hld | lld — post/feed model classes |
 | Web Crawler | hld | lld — URL frontier, crawler worker classes |
 | Search Autocomplete | hld | lld — trie/index class design |
 | Connect Four | lld | hld — online multiplayer at scale |
 | Movie Ticket Booking | lld | hld — booking platform at scale (overlaps Ticketmaster) |
-| Logging Service | lld | hld — distributed log ingestion/aggregation at scale |
 | Inventory Management | lld | hld — distributed inventory across warehouses |
 | Vending Machine | lld | hld — fleet monitoring/restocking at scale |
 
 ## Progress
 
-Priority: 3 / 8 primary sides built, 3 / 8 secondary sides built
-(Ticketmaster, Parking Lot, Amazon Locker — both sides each). Note: none
-of these link back to concept lessons yet, since HLD/LLD concept modules
-(0/12 built each) don't exist — each case study lesson explains needed
-concepts inline instead, flagged with `concept-dependency` comments for
-a future pass to convert to real links. See the ruling in
+Priority: 3 / 13 primary sides built, 3 / 13 secondary sides built
+(Ticketmaster, Parking Lot, Amazon Locker — both sides each). CS-09
+through CS-13 (Ride-Sharing, Netflix, Food Panda, Event Tracking,
+Notification Service) added 2026-08-27, primary side only for this
+pass — secondary sides deferred, same "opportunistic, added later"
+pattern as CS-01–08. Note: none of these link back to concept lessons
+yet, since HLD/LLD concept modules (0/12 built each) don't exist — each
+case study lesson explains needed concepts inline instead, flagged
+with `concept-dependency` comments for a future pass to convert to
+real links. See the ruling in
 [docs/superpowers/plans/TRACKER.md](../../docs/superpowers/plans/TRACKER.md).
