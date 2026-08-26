@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { ThemeToggle } from "./ThemeToggle";
+import { SearchDialog } from "@/components/search/SearchDialog";
 
 export function TopBar() {
   return (
@@ -10,7 +11,10 @@ export function TopBar() {
       >
         System Design Course
       </Link>
-      <ThemeToggle />
+      <div className="flex items-center gap-2">
+        <SearchDialog />
+        <ThemeToggle />
+      </div>
     </header>
   );
 }
