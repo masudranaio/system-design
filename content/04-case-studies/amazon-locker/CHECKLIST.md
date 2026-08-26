@@ -6,8 +6,8 @@ drafted. Produced per
 with the output format amended by
 [docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md](../../../docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md).
 
-Status: LLD not started (primary side), HLD not started (secondary
-side). See [SYLLABUS.md](../../../SYLLABUS.md) /
+Status: LLD built (`lld.mdx`, primary side), HLD built (`hld.mdx`,
+secondary side) — both drafted and verified. See [SYLLABUS.md](../../../SYLLABUS.md) /
 [04-case-studies/SYLLABUS.md](../SYLLABUS.md) (CS-06) for build
 priority — this checklist is a plan, not a built lesson.
 
@@ -20,164 +20,164 @@ single-station (LLD) and city-wide-network (HLD) level.
 
 ### Functional Requirements
 
-- [ ] Search for a locker station near a delivery address with
+- [x] Search for a locker station near a delivery address with
       capacity for a given package size
-- [ ] Carrier deposits a package: system matches size to an available
+- [x] Carrier deposits a package: system matches size to an available
       compartment, assigns it, generates a unique access code/token
-- [ ] Customer notified (code + instructions) once deposited
-- [ ] Customer retrieves via code at touchscreen/app; correct code
+- [x] Customer notified (code + instructions) once deposited
+- [x] Customer retrieves via code at touchscreen/app; correct code
       unlocks the exact compartment and frees it afterward
-- [ ] Access codes expire after a fixed pickup window; expired codes
+- [x] Access codes expire after a fixed pickup window; expired codes
       rejected
-- [ ] Staff/ops can force-open compartments with expired, unclaimed
+- [x] Staff/ops can force-open compartments with expired, unclaimed
       packages
-- [ ] Returns flow: customer drops off a return package with a
+- [x] Returns flow: customer drops off a return package with a
       separate drop-off code; locker enters "return-pending" state
       until carrier pickup
-- [ ] Specific errors: invalid code, expired code, already-used code,
+- [x] Specific errors: invalid code, expired code, already-used code,
       no matching-size compartment available
 
 ### Non-Functional Requirements
 
-- [ ] One access token maps to exactly one package/compartment (1:1)
-- [ ] Strict size matching in the base design (small/medium/large,
+- [x] One access token maps to exactly one package/compartment (1:1)
+- [x] Strict size matching in the base design (small/medium/large,
       sometimes XL/XXL) — no automatic fallback unless an extension
-- [ ] Pickup window: ~3 days standard, up to 7 days expedited, ~14
+- [x] Pickup window: ~3 days standard, up to 7 days expedited, ~14
       days business accounts; 24h/48h reminder notifications
-- [ ] Returns dwell time longer than deliveries (~6 days vs ~2.5-3
+- [x] Returns dwell time longer than deliveries (~6 days vs ~2.5-3
       days)
-- [ ] Package limits: up to ~19 inches per dimension, under ~35 lbs
-- [ ] Concurrency: no double-booking the same compartment; no two
+- [x] Package limits: up to ~19 inches per dimension, under ~35 lbs
+- [x] Concurrency: no double-booking the same compartment; no two
       couriers depositing into the same slot simultaneously
-- [ ] Must distinguish "expired" from "never existed" (keep expired
+- [x] Must distinguish "expired" from "never existed" (keep expired
       tokens mapped, don't delete)
-- [ ] At scale (HLD): 24/7 availability, offline-degraded mode,
+- [x] At scale (HLD): 24/7 availability, offline-degraded mode,
       sub-100ms availability-query latency, 2-3s unlock latency, >95%
       cache hit rate
 
 ### Explicitly Out of Scope
 
-- [ ] Payment processing for locker rental/storage fees
-- [ ] Full user account/auth system — assume identity already
+- [x] Payment processing for locker rental/storage fees
+- [x] Full user account/auth system — assume identity already
       established
-- [ ] Notification system internals in the base LLD (extension only)
-- [ ] Lockout-after-failed-attempts mechanism (extension only)
-- [ ] Route optimization for delivery agents, physical robotics/
+- [x] Notification system internals in the base LLD (extension only)
+- [x] Lockout-after-failed-attempts mechanism (extension only)
+- [x] Route optimization for delivery agents, physical robotics/
       hardware internals
 
 ## HLD Checklist (`hld.mdx`) — secondary side
 
 ### 1. Problem framing
 
-- [ ] Zoom out to a city-wide/nationwide network of thousands of
+- [x] Zoom out to a city-wide/nationwide network of thousands of
       locker stations: geo-discovery ("find a locker near me with
       capacity"), coordinating reservations across an IoT-connected
       fleet, staying available when individual lockers lose
       connectivity
-- [ ] Frame as "a distributed IoT + reservation system," not just the
+- [x] Frame as "a distributed IoT + reservation system," not just the
       LLD problem at bigger numbers
 
 ### 2. Requirements & capacity estimate
 
-- [ ] Locker discovery by geo-radius + size/capacity filter
-- [ ] Atomic slot reservation preventing double-booking across
+- [x] Locker discovery by geo-radius + size/capacity filter
+- [x] Atomic slot reservation preventing double-booking across
       concurrent requests
-- [ ] Deposit/pickup at any of thousands of stations
-- [ ] Device health/telemetry monitoring
-- [ ] OTA firmware updates
-- [ ] Returns coordination with carrier pickup scheduling
-- [ ] Scale: peak ~500,000 QPS on the capacity-reservation path
+- [x] Deposit/pickup at any of thousands of stations
+- [x] Device health/telemetry monitoring
+- [x] OTA firmware updates
+- [x] Returns coordination with carrier pickup scheduling
+- [x] Scale: peak ~500,000 QPS on the capacity-reservation path
       (scaled from ~2,000 QPS baseline)
-- [ ] <100ms availability-query latency
-- [ ] 2-3s unlock latency
-- [ ] >95% cache hit rate
-- [ ] 24/7 with graceful offline degradation
-- [ ] Compartment mix ~40% small/35% medium/20% large/5% oversized,
+- [x] <100ms availability-query latency
+- [x] 2-3s unlock latency
+- [x] >95% cache hit rate
+- [x] 24/7 with graceful offline degradation
+- [x] Compartment mix ~40% small/35% medium/20% large/5% oversized,
       30-150 compartments per station
-- [ ] Prime Day-style events causing 10-20x volume spikes
+- [x] Prime Day-style events causing 10-20x volume spikes
 
 ### 3. Core content — architecture diagram
 
-- [ ] API Gateway/frontend layer: customer app, delivery-agent app,
+- [x] API Gateway/frontend layer: customer app, delivery-agent app,
       in-station touchscreen
-- [ ] Core microservices: Locker Management Service (station/
+- [x] Core microservices: Locker Management Service (station/
       compartment state+health), Capacity Reservation Service (hot
       path, matches packages to compartments under heavy concurrency),
       Package Service (lifecycle), Auth Service, Notification Service,
       Returns Service
-- [ ] Multi-level caching tier (in-process -> Redis/Memcached ->
+- [x] Multi-level caching tier (in-process -> Redis/Memcached ->
       pre-computed regional snapshots) in front of a geo-sharded DB
       layer (Postgres transactional + InfluxDB-style time-series for
       telemetry)
-- [ ] Separate IoT layer: each locker connects over MQTT (async
+- [x] Separate IoT layer: each locker connects over MQTT (async
       telemetry: heartbeat, door sensors, power, firmware version)
       with a synchronous unlock-command path and TLS/X.509 device auth
 
 ### 4. Core content — deep dives
 
-- [ ] Geo-discovery + atomic reservation under contention:
+- [x] Geo-discovery + atomic reservation under contention:
       geo-hashing for radius queries, cached ranked results,
       optimistic concurrency control with versioned conditional
       updates, pre-allocated regional reservation queues at extreme
       throughput
-- [ ] Multi-level caching for the 500K QPS read path: L1 in-process
+- [x] Multi-level caching for the 500K QPS read path: L1 in-process
       <1ms TTL 5-10s -> L2 Redis 1-5ms write-through -> L3
       pre-computed regional snapshots refreshed every 5-15s -> L4
       geo-sharded Postgres source of truth
-- [ ] IoT offline resilience: local cache of active pickup codes so
+- [x] IoT offline resilience: local cache of active pickup codes so
       pickup succeeds offline, local retry queue with exponential
       backoff, reconciliation on reconnect, battery backup 30-60min,
       fail-secure vs fail-open lock hardware trade-off
 
 ### 5. Trade-offs
 
-- [ ] Consistency vs availability for locker state: eventual (station
+- [x] Consistency vs availability for locker state: eventual (station
       keeps serving while offline, reconciles later) vs strong
       (blocks deposit until central confirms, safer but breaks
       offline-tolerance)
-- [ ] Local code verification (offline pickups, delayed revocation) vs
+- [x] Local code verification (offline pickups, delayed revocation) vs
       centralized verification (safer, connectivity-dependent)
-- [ ] Reservation aggressiveness: conservative holds, guaranteed but
+- [x] Reservation aggressiveness: conservative holds, guaranteed but
       lower utilization vs aggressive/probabilistic release based on
       predicted dwell time, higher utilization but conflict risk
-- [ ] Precomputed regional snapshots (sustain 500K QPS, seconds-stale)
+- [x] Precomputed regional snapshots (sustain 500K QPS, seconds-stale)
       vs on-demand computation (fresh, can't hit throughput without
       heavy caching anyway)
 
 ### 6. Worked example
 
-- [ ] Trace: customer app queries "lockers near me with a medium
+- [x] Trace: customer app queries "lockers near me with a medium
       slot" -> geo-hash lookup hits L3 snapshot cache (miss falls to
       L2 Redis then L4 Postgres)
-- [ ] Continue trace: customer reserves via Capacity Reservation
+- [x] Continue trace: customer reserves via Capacity Reservation
       Service (optimistic-concurrency conditional update on
       compartment row/version)
-- [ ] Continue trace: courier arrives, station briefly offline
+- [x] Continue trace: courier arrives, station briefly offline
       (cellular blip), but reservation was already synced to the
       station's local cache pre-arrival so deposit succeeds locally,
       telemetry queues confirmation
-- [ ] Continue trace: central system reconciles once reconnected,
+- [x] Continue trace: central system reconciles once reconnected,
       updates source-of-truth DB, invalidates stale cache entries,
       fires customer notification
-- [ ] Exercises geo-discovery, caching tiers, optimistic concurrency,
+- [x] Exercises geo-discovery, caching tiers, optimistic concurrency,
       offline-resilience in one flow
 
 ### 7. Interview angle
 
-- [ ] Follow-up: "How do you prevent two customers from reserving the
+- [x] Follow-up: "How do you prevent two customers from reserving the
       same compartment at the same time across two different app
       servers?" (optimistic concurrency vs naive locking)
-- [ ] Follow-up: "A locker station loses internet for an hour during a
+- [x] Follow-up: "A locker station loses internet for an hour during a
       busy period — what happens to in-flight pickups/deposits?"
       (offline-resilience deep dive)
-- [ ] Follow-up: "Prime Day causes a 15x spike in one metro area —
+- [x] Follow-up: "Prime Day causes a 15x spike in one metro area —
       where does the system bend/break first, how do you protect it?"
       (caching tiers, regional load balancing, queueing vs just adding
       servers)
 
 ### 8. Practice & Self-Check
 
-- [ ] Open challenge: "Extend the network-scale design to support
+- [x] Open challenge: "Extend the network-scale design to support
       dynamic, demand-aware locker placement: given historical
       utilization and dwell-time data per station, design a subsystem
       that recommends where to add new locker capacity (or reallocate
@@ -342,6 +342,56 @@ single-station (LLD) and city-wide-network (HLD) level.
 
 ## Completeness Pass Log
 
+**`hld.mdx` — 2026-08-26 (controller pass).** Walked every item in the
+"HLD Checklist" section above against the finished lesson; all checked
+off `[x]`, nothing dropped. Notes:
+
+- Problem framing explicitly rejects "the LLD problem at bigger numbers"
+  and reframes into the three checklist axes (geo-discovery, coordinated
+  reservation, fleet-wide connectivity), opening with a link back to the
+  LLD lesson.
+- Requirements & capacity estimate lists every functional/non-functional
+  item from the checklist verbatim (including OTA firmware updates and
+  returns coordination, easy to drop) and, notably, *derives* the
+  500,000 QPS figure via back-of-envelope math (2,000 events/sec baseline
+  x ~15x read amplification x ~17x Prime-Day spike ≈ 500K) rather than
+  just asserting the checklist's number — stronger than the checklist
+  technically required.
+- Architecture diagram: one `graph TD` covers the client layer (customer
+  app, agent app, kiosk), all 6 named microservices, the 3-tier cache,
+  the geo-sharded Postgres + time-series data layer, and a separate IoT
+  channel (MQTT telemetry + TLS/X.509-authenticated unlock path) —
+  every checklist element present and labeled on its edges.
+- Deep dives: all 3 covered as their own subsections — geo-discovery +
+  OCC reservation (with regional reservation queues for extreme
+  throughput), the 4-tier cache with the checklist's exact latency/TTL
+  figures per tier, and IoT offline resilience (local code cache, retry
+  queue with backoff, reconciliation, 30-60min battery backup,
+  fail-secure vs. fail-open explained as a genuine two-sided trade-off
+  rather than a single "right" answer).
+- Trade-offs: all 4 covered, each naming its alternative explicitly
+  (eventual vs. strong consistency, local vs. centralized verification,
+  conservative vs. probabilistic reservation release, precomputed
+  snapshots vs. on-demand computation).
+- Worked example: one sequence diagram traces all 4 checklist beats in
+  order (geo lookup falling through the cache tiers, OCC reservation,
+  offline deposit against a pre-synced local cache, reconcile +
+  invalidate + notify), with prose afterward calling out two easy-to-miss
+  details (reservation synced *before* the courier arrives; explicit
+  cache invalidation rather than waiting for TTL).
+- Interview angle: all 3 follow-ups answered with a specific mechanism,
+  not just restated.
+- Practice & Self-Check: 8 recap `QuizItem`s (plus 2 inline ones after
+  major concepts) mixing recall/why/scenario questions, and the
+  checklist's exact open-challenge scenario (demand-aware locker
+  placement) with a concrete reference answer (a Placement Recommendation
+  Service consuming an async event stream, isolated from the reservation
+  hot path) inside a collapsible `<details>` and a 6-item `Rubric`.
+
+Verified rendering at `/case-studies/amazon-locker/hld` via `pnpm dev` +
+Playwright, by the controller: page renders with no console errors, both
+`graph` architecture diagrams and the `sequenceDiagram` render as SVG.
+
 **`lld.mdx` — built 2026-08-26.** Every item in the "LLD Checklist
 (`lld.mdx`) — primary side" section above is ticked and covered
 directly in the finished lesson:
@@ -387,6 +437,5 @@ directly in the finished lesson:
   (auto-computing the Novice/Practicing/Interview-ready self-score
   band).
 
-Nothing from the LLD checklist section was dropped. The "Problem Scope"
-and "HLD Checklist" sections above are unaffected — HLD (`hld.mdx`) is
-still not built, per `SYLLABUS.md`'s CS-06 status.
+Nothing from the LLD checklist section was dropped. (HLD's own
+completeness pass is logged separately above, once `hld.mdx` was built.)

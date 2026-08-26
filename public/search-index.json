@@ -1,1 +1,32 @@
-[]
+[
+  {
+    "title": "Amazon Locker — High-Level Design",
+    "href": "/case-studies/amazon-locker/hld",
+    "excerpt": "This lesson zooms out from a single locker station to the network that\noperates thousands of them. It builds directly on the object model from\nthe [Amazon Locker LLD](/case-studies/amazon-locker/lld)"
+  },
+  {
+    "title": "Amazon Locker — Low-Level Design",
+    "href": "/case-studies/amazon-locker/lld",
+    "excerpt": "<SectionTracker\n  sections={[\"Problem Framing\", \"Core Content\", \"Trade-offs\", \"Worked Example\", \"Interview Angle\", \"Practice & Self-Check\"]}\n  active=\"Problem Framing\"\n/\n\n Problem framing\n\nZoom in to"
+  },
+  {
+    "title": "Parking Lot — High-Level Design",
+    "href": "/case-studies/parking-lot/hld",
+    "excerpt": "This lesson picks up where the\n[Parking Lot LLD](/case-studies/parking-lot/lld) left off. That lesson\nmodeled a single facility: one ParkingLot, its Levels, Spots, and\nthe Gates that atomically flip"
+  },
+  {
+    "title": "Parking Lot — Low-Level Design",
+    "href": "/case-studies/parking-lot/lld",
+    "excerpt": "<SectionTracker\n  sections={[\"Problem framing\", \"Core content\", \"Trade-offs\", \"Worked example\", \"Interview angle\", \"Practice & self-check\"]}\n  active=\"Problem framing\"\n/\n\n Problem framing\n\nParking lo"
+  },
+  {
+    "title": "Ticketmaster: High-Level Design",
+    "href": "/case-studies/ticketmaster/hld",
+    "excerpt": "Ticketmaster's hard problem isn't showing a seat map — it's that a popular\non-sale turns \"let people buy tickets\" into \"let a million people try to buy\nthe same 20,000 seats in the same ten seconds,"
+  },
+  {
+    "title": "Ticketmaster — Booking, Seat & Event Schema",
+    "href": "/case-studies/ticketmaster/lld",
+    "excerpt": "<SectionTracker\n  sections={[\"Problem\", \"Entities\", \"Classes\", \"State machines\", \"Patterns\", \"Database\", \"Trade-offs\", \"Worked example\", \"Interview\", \"Practice\"]}\n  active=\"Problem\"\n/\n\n Problem frami"
+  }
+]

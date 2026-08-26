@@ -198,7 +198,7 @@ prefix. "Find everything within 2 miles" becomes "find everything whose
 geohash starts with this prefix," which is an indexed prefix lookup
 instead of a geometric scan over every station's coordinates.
 
-<!-- concept-dependency: HLD-11 not yet built, explained inline -->
+{/* concept-dependency: HLD-11 not yet built, explained inline */}
 
 Once a customer picks a station, the reservation itself has to survive
 concurrent attempts. The design uses **optimistic concurrency control
@@ -216,7 +216,7 @@ collides. Given that any single compartment is contended by two
 customers only occasionally, OCC pays the cost — a retry — only when a
 collision actually happens.
 
-<!-- concept-dependency: HLD-10 not yet built, explained inline -->
+{/* concept-dependency: HLD-10 not yet built, explained inline */}
 
 At extreme throughput, even OCC needs help: if every reservation attempt
 across the whole network competes for connections against every other
@@ -264,8 +264,8 @@ fast key-value hit still costs a scatter-gather across many keys to
 build a ranked "nearest N compartments" answer; L3 precomputes that
 answer directly._
 
-<!-- concept-dependency: HLD-06 not yet built, explained inline -->
-<!-- concept-dependency: HLD-07 not yet built, explained inline -->
+{/* concept-dependency: HLD-06 not yet built, explained inline */}
+{/* concept-dependency: HLD-07 not yet built, explained inline */}
 
 L2 uses **write-through** caching: when a reservation changes a
 compartment's status, the write goes to Redis and Postgres together
@@ -301,7 +301,7 @@ a station to the rest of the system:
   a command or accepting a report, so a compromised or spoofed device
   can't unlock compartments it doesn't own.
 
-<!-- concept-dependency: HLD-10 not yet built, explained inline -->
+{/* concept-dependency: HLD-10 not yet built, explained inline */}
 
 Neither channel assumes the station is always reachable. Each station
 keeps a **local cache of active pickup codes** synced ahead of time, so
@@ -347,7 +347,7 @@ fraction of stations are always mid-reconnect, that's a worse failure
 mode than the rare double-booking eventual consistency has to catch and
 resolve on reconciliation.
 
-<!-- concept-dependency: HLD-01 not yet built, explained inline -->
+{/* concept-dependency: HLD-01 not yet built, explained inline */}
 
 This is the same tension the CAP theorem names for any distributed
 system: when a network partition happens (here, a station losing its

@@ -286,6 +286,54 @@ not re-checked here.)
 
 ## Completeness Pass Log
 
+**`lld.mdx` — 2026-08-26.** Walked every item in the "LLD Checklist"
+section above against the finished lesson; all checked off `[x]`, nothing
+dropped. Notes:
+
+- Problem framing opens with the clarifying-questions-first framing and
+  explicitly draws the LLD/HLD boundary (single facility vs. network),
+  linking to the HLD companion lesson.
+- Requirements at the object level correctly separates "nouns that
+  become classes" from "nouns that don't" (fee as a computed value, not
+  an entity), states all four cardinalities, and gives the
+  vehicle-to-spot compatibility rule as an explicit table.
+- The class diagram covers all 8 checklist entities (`ParkingLot`,
+  `Level`, `Spot`, `Vehicle` + 3 subtypes, `Ticket`, `EntryGate`/
+  `ExitGate`, `Payment`, `DisplayBoard`) plus the two injected strategy
+  interfaces, with composition/association/dependency relationships
+  distinguished and explained in the caption.
+- Both state machines are covered as their own `stateDiagram-v2` panels
+  (Spot: `AVAILABLE ⇄ RESERVED/OCCUPIED`; Ticket: `ISSUED → PAID/LOST/
+  REJECTED`), and the atomic-pairing requirement (spot flip + ticket
+  close as one unit) is called out explicitly as the bug interviewers
+  probe for.
+- All 5 design-pattern items covered: Singleton (with the DI alternative
+  and its trade-off named), Strategy used twice (assignment + pricing,
+  with the "why two, not one combined policy" reasoning spelled out),
+  Factory, Observer, and State framed as an optional advanced answer.
+- Database design covers the schema, the `spot.status`-as-column
+  reasoning (indexed point lookup vs. derived join/scan), all 3 indexes
+  with what each protects, and the compare-and-set concurrency mechanism
+  with a concrete `UPDATE ... WHERE status = 'AVAILABLE'` statement.
+- Both trade-offs (best-fit vs. nearest-fit, push vs. poll) are covered,
+  each naming its cost, not just its win; Singleton vs. DI is repeated
+  here as its own trade-off entry per the checklist.
+- The worked example traces one full entry-to-exit visit (Lot 12, Spot
+  3-047, $10.00 fee with the arithmetic shown) via one sequence diagram,
+  explicitly tied back to the state machine's atomic-transition point.
+- All 3 interview-angle follow-ups are answered directly (reservation
+  extension via the already-drawn `RESERVED` state, the concurrency walk-
+  through, and the pricing-strategy extensibility probe).
+- Practice & Self-Check: 6 recap `QuizItem`s plus the checklist's exact
+  open-challenge scenario (handicapped + EV-charging spots) with a
+  concrete reference answer inside a collapsible `<details>` and a
+  7-item `Rubric`.
+
+Verified rendering at `/case-studies/parking-lot/lld` via `pnpm dev` +
+Playwright, by the controller: page renders with no console errors, the
+`classDiagram`, both `stateDiagram-v2` panels, the `erDiagram`, and the
+`sequenceDiagram` all render as SVG in both light and dark theme.
+
 **`hld.mdx` — 2026-08-26.** Walked every item in the "HLD Checklist"
 section above against the finished lesson; all checked off `[x]`,
 nothing dropped. Notes:

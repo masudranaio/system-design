@@ -72,7 +72,7 @@ around it does.
   that's a few seconds stale is an acceptable, expected trade-off — no
   driver is harmed by seeing "12 spots" when there are actually 11.
   Double-booking a paid reservation is not acceptable at any staleness.
-  <!-- concept-dependency: HLD-01 not yet built, explained inline -->
+  {/* concept-dependency: HLD-01 not yet built, explained inline */}
   This split — strong consistency (every read reflects the latest
   committed write, immediately) for money-bearing state vs. eventual
   consistency (reads may lag writes by a bounded delay but always
@@ -169,7 +169,7 @@ Six layers, each doing one job:
 6. **API/gateway layer.** Stateless, horizontally scaled services
    fronting three distinct capabilities behind one edge: search,
    reservation, and partner ingestion.
-   <!-- concept-dependency: HLD-03 not yet built, explained inline -->
+   {/* concept-dependency: HLD-03 not yet built, explained inline */}
    "Stateless" here means no service instance holds session or
    per-request state in memory between calls — any instance behind the
    load balancer can serve any request, so the fleet scales horizontally
@@ -188,7 +188,7 @@ Trade-offs below.
 
 ## Deep dive: partitioning the data
 
-<!-- concept-dependency: HLD-07 not yet built, explained inline -->
+{/* concept-dependency: HLD-07 not yet built, explained inline */}
 Partitioning (also called sharding) means splitting one logical dataset
 across many physical nodes by some key, so no single node has to hold or
 serve the whole thing. Here the partition key is `lot_id` (or a
@@ -234,7 +234,7 @@ from a database. At ~160,000 reads/sec that database falls over — and
 most of those reads are for lots whose count hasn't changed since the
 last read.
 
-<!-- concept-dependency: HLD-06 not yet built, explained inline -->
+{/* concept-dependency: HLD-06 not yet built, explained inline */}
 The fix is a **push-based update, cache-aside-adjacent pattern**: instead
 of every reader pulling from the database (polling), the stream
 processor pushes an updated count into the cache the moment an event
@@ -270,7 +270,7 @@ integration has a stale queue. Two mechanisms handle this together:
    the network and replays them, in order, on reconnect. Each event
    carries a unique id so the stream processor can drop duplicates if
    the same event gets replayed twice — this is what makes replay safe:
-   <!-- concept-dependency: HLD-05 not yet built, explained inline -->
+   {/* concept-dependency: HLD-05 not yet built, explained inline */}
    an **at-least-once** delivery guarantee (an event might arrive more
    than once, but never zero times) paired with **idempotent**
    processing (applying the same event twice has the same effect as
@@ -286,7 +286,7 @@ integration has a stale queue. Two mechanisms handle this together:
    corrects drift. This is the safety net for the failure mode that
    buffering can't see coming.
 
-<!-- concept-dependency: HLD-10 not yet built, explained inline -->
+{/* concept-dependency: HLD-10 not yet built, explained inline */}
 Both mechanisms exist because distributed systems can't assume a
 network link stays up or a message arrives exactly once — a lot going
 fully offline is a network partition from the operator's point of view,
@@ -301,7 +301,7 @@ zero spots."
 
 ## Deep dive: fanning out a geospatial search
 
-<!-- concept-dependency: HLD-11 not yet built, explained inline -->
+{/* concept-dependency: HLD-11 not yet built, explained inline */}
 "Find lots within 2 miles of this point" doesn't run efficiently against
 a plain `(lat, lng)` column — nothing indexes two dimensions at once for
 range queries. A **geohash** solves this by interleaving a location's

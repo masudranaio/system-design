@@ -38,7 +38,7 @@ same small set of rows in the same section, with a hard rule that a seat
 sold to one buyer can never also be sold to another, is not a caching
 problem. It's a consistency problem under contention.
 
-<!-- concept-dependency: HLD-01 not yet built, explained inline -->
+{/* concept-dependency: HLD-01 not yet built, explained inline */}
 That's why checkout is a **consistency-over-availability** problem rather
 than an availability-over-consistency one. The CAP theorem says that when a
 network partition happens, a distributed system has to choose: stay
@@ -156,7 +156,7 @@ replicas; booking and payment are a separate subsystem built around a
 Redis-backed hold and a version-checked database write, because that's
 where the correctness guarantee has to live.
 
-<!-- concept-dependency: HLD-03 not yet built, explained inline -->
+{/* concept-dependency: HLD-03 not yet built, explained inline */}
 The "API Gateway" box is a fleet, not one machine, sitting behind an L7
 (application-layer) load balancer that reads each request's path/host and
 routes it to the right backend service, spreading the 100k req/s read
@@ -223,7 +223,7 @@ no conflict, verify at commit, retry or reject if wrong — as opposed to
 "pessimistic" locking, which would acquire the row lock upfront and hold
 it for the whole checkout. More on that contrast in Trade-offs.
 
-<!-- concept-dependency: HLD-07 not yet built, explained inline -->
+{/* concept-dependency: HLD-07 not yet built, explained inline */}
 The booking database itself is a relational store (Postgres) specifically
 *because* this version check needs to be transactional and durable —
 `UPDATE ... WHERE version = ?` is a single atomic statement backed by
@@ -303,7 +303,7 @@ Outside a drop window, this system looks nothing like the checkout path:
 being read (event descriptions, venue info, artist pages) barely changes
 minute to minute. That's a classic cache-friendly workload.
 
-<!-- concept-dependency: HLD-06 not yet built, explained inline -->
+{/* concept-dependency: HLD-06 not yet built, explained inline */}
 Event pages sit behind a CDN, so repeat requests for the same event never
 reach the origin at all. Behind that, the Search/Catalog Service uses a
 **cache-aside** pattern against Redis: on a read, check the cache first; on
@@ -389,7 +389,7 @@ one undifferentiated choice.
 | Distributed lock (Redis `SET NX`, or ZooKeeper/etcd) | An external, fast, shared lock any service instance can check | High-throughput, low-latency claims across many service instances, before touching the DB at all | Adds a dependency and a network hop to the critical path; correctness depends on getting the TTL and failure handling right |
 | Virtual queue | Throttles *admission*, not per-item access | Protecting overall system capacity from a global demand spike | Doesn't solve the per-seat race at all — it's solving a different problem and is needed *in addition to* a lock, not instead of one |
 
-<!-- concept-dependency: HLD-10 not yet built, explained inline -->
+{/* concept-dependency: HLD-10 not yet built, explained inline */}
 Redis and ZooKeeper both provide distributed locks, but they make
 different trade-offs worth naming: Redis's `SET NX EX` is fast and simple
 but, used naively across a Redis cluster, can theoretically lose a lock

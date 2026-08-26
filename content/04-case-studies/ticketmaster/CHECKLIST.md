@@ -7,7 +7,8 @@ with the output format amended by
 [docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md](../../../docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md)
 (`hld.html`/`lld.html` → `hld.mdx`/`lld.mdx`; content plan unchanged).
 
-Status: HLD built (`hld.mdx`), LLD not started. See
+Status: HLD built (`hld.mdx`), LLD built (`lld.mdx`) — both drafted and
+verified. See
 [SYLLABUS.md](../../../SYLLABUS.md) / [04-case-studies/SYLLABUS.md](../SYLLABUS.md)
 (CS-08) for build priority — this checklist is a plan, not a built lesson.
 
@@ -19,30 +20,30 @@ the same show in the same second.
 
 ### Functional Requirements
 
-- [ ] Search/browse events and venues
-- [ ] View live seat availability for a show
-- [ ] Reserve a seat temporarily while paying (a time-boxed hold)
-- [ ] Complete payment and confirm the booking
-- [ ] Cancel/expire a hold or booking and release the seat
+- [x] Search/browse events and venues
+- [x] View live seat availability for a show
+- [x] Reserve a seat temporarily while paying (a time-boxed hold)
+- [x] Complete payment and confirm the booking
+- [x] Cancel/expire a hold or booking and release the seat
 
 ### Non-Functional Requirements
 
-- [ ] Strong consistency on seat state during checkout — no double-booking
+- [x] Strong consistency on seat state during checkout — no double-booking
       or overselling, even under contention
-- [ ] Scale: ~1M concurrent users during a popular on-sale, ~100k
+- [x] Scale: ~1M concurrent users during a popular on-sale, ~100k
       seat-view requests/sec, ~10k write transactions/sec during a ticket
       drop
-- [ ] Low search/browse latency (<500ms), high read:write ratio (~100:1)
+- [x] Low search/browse latency (<500ms), high read:write ratio (~100:1)
       outside of drop windows
-- [ ] Availability for browsing even if the write path is under extreme
+- [x] Availability for browsing even if the write path is under extreme
       load
 
 ### Explicitly Out of Scope
 
-- [ ] Full payment-gateway integration details
-- [ ] Seating-chart rendering/UI
-- [ ] Recommendations/marketing
-- [ ] Refund/dispute policy details
+- [x] Full payment-gateway integration details
+- [x] Seating-chart rendering/UI
+- [x] Recommendations/marketing
+- [x] Refund/dispute policy details
 
 ## HLD Checklist (`hld.mdx`)
 
@@ -107,73 +108,73 @@ the same show in the same second.
 
 ### 1. Problem framing
 
-- [ ] Frame the problem from the object/schema level: model the booking
+- [x] Frame the problem from the object/schema level: model the booking
       domain so seat-state transitions are safe by construction, not by
       convention
 
 ### 2. Requirements at the object level
 
-- [ ] Identify the entities and lifecycle states needed to support the
+- [x] Identify the entities and lifecycle states needed to support the
       functional requirements above
 
 ### 3. Class diagram
 
-- [ ] Class diagram (Mermaid `classDiagram`) covering Event, Venue,
+- [x] Class diagram (Mermaid `classDiagram`) covering Event, Venue,
       SeatMap, Seat, Show, Booking, BookingItem, Payment, User,
       PricingTier, and their relationships
 
 ### 4. State machines
 
-- [ ] Seat state machine: `AVAILABLE → LOCKED(TTL) → BOOKED`, with paths
+- [x] Seat state machine: `AVAILABLE → LOCKED(TTL) → BOOKED`, with paths
       back to `AVAILABLE` on expiry or cancellation
-- [ ] Booking state machine: `PENDING → CONFIRMED → CANCELLED / EXPIRED`
+- [x] Booking state machine: `PENDING → CONFIRMED → CANCELLED / EXPIRED`
 
 ### 5. Design patterns
 
-- [ ] State — for Seat and Booking lifecycles, instead of scattered status
+- [x] State — for Seat and Booking lifecycles, instead of scattered status
       if/else checks
-- [ ] Strategy — for pricing (VIP / general / dynamic), swappable without
+- [x] Strategy — for pricing (VIP / general / dynamic), swappable without
       touching booking logic
-- [ ] Factory — for creating different ticket/seat types
-- [ ] Observer — for notifying waiting users when a held seat is released
+- [x] Factory — for creating different ticket/seat types
+- [x] Observer — for notifying waiting users when a held seat is released
       back to available
-- [ ] SOLID framing threaded through (e.g. Strategy over an if/else
+- [x] SOLID framing threaded through (e.g. Strategy over an if/else
       pricing block as an Open/Closed win)
 
 ### 6. Database design
 
-- [ ] ER diagram / schema for the entities above
-- [ ] Normalization decisions: seat inventory as its own row per
+- [x] ER diagram / schema for the entities above
+- [x] Normalization decisions: seat inventory as its own row per
       seat-per-show rather than denormalized into Event; where
       denormalizing would help read-heavy seat-map queries
-- [ ] Indexing strategy for "show seat availability for show X"
-- [ ] SQL vs NoSQL at the object level: relational for bookings/payments
+- [x] Indexing strategy for "show seat availability for show X"
+- [x] SQL vs NoSQL at the object level: relational for bookings/payments
       (needs transactions), Redis alongside it for the seat-hold TTL —
       deliberately not a schema table
-- [ ] Concurrency at the schema level: the `version` column backing the
+- [x] Concurrency at the schema level: the `version` column backing the
       optimistic-lock check
 
 ### 7. Trade-offs
 
-- [ ] State pattern vs enum+if-else
-- [ ] Normalized vs denormalized seat-status table for fast reads
+- [x] State pattern vs enum+if-else
+- [x] Normalized vs denormalized seat-status table for fast reads
 
 ### 8. Worked example
 
-- [ ] Sequence diagram of the reserve-seat flow through the classes,
+- [x] Sequence diagram of the reserve-seat flow through the classes,
       including the version-check retry path
 
 ### 9. Interview angle
 
-- [ ] Follow-up: "walk me through your classes"
-- [ ] Follow-up: "how does this prevent double-booking at the code level"
-- [ ] Follow-up: extensibility probes (add a new pricing strategy without
+- [x] Follow-up: "walk me through your classes"
+- [x] Follow-up: "how does this prevent double-booking at the code level"
+- [x] Follow-up: extensibility probes (add a new pricing strategy without
       touching `Booking`)
 
 ### 10. Practice & Self-Check
 
-- [ ] Recap quiz on pattern identification and schema decisions
-- [ ] Open challenge: "extend the design to support group bookings of
+- [x] Recap quiz on pattern identification and schema decisions
+- [x] Open challenge: "extend the design to support group bookings of
       adjacent seats" with rubric
 
 ## Completeness Pass Log
@@ -239,3 +240,89 @@ Playwright: page renders with no console errors, all 4 Mermaid diagrams
 render as SVG (not raw text), quiz reveal/hide works, and the rubric's
 checkbox interactions update the self-score band live. Checked in both
 light and dark theme.
+
+### `lld.mdx` (2026-08-26)
+
+Walked every LLD checklist item above against the finished lesson; all are
+covered and ticked `[x]`. Notes:
+
+- **Problem framing**: reframes the HLD's system-level solution at the
+  object/schema level — a plain `status` field plus scattered `if/else`
+  checks is named as the actual bug source, not "concurrency" in the
+  abstract.
+- **Requirements at the object level**: each functional requirement maps
+  to a specific entity/lifecycle need (search → `Event`/`Venue`/`Show`;
+  live availability → cheap-to-read `Seat` status; temporary hold →
+  `LOCKED` state with an owner and expiry; payment/confirm → `Booking`'s
+  own lifecycle; cancel/expire → both directions back to the start state
+  named explicitly, with the "two triggers, one destination state" trap
+  called out).
+- **Class diagram**: one `classDiagram` covers all 10 checklist entities
+  (`Venue`, `SeatMap`, `Seat`, `PricingTier`, `Event`, `Show`, `Booking`,
+  `BookingItem`, `Payment`, `User`) plus `SeatInventory` as the class that
+  actually owns per-show seat state — a deliberate, explained addition,
+  not scope creep (the "why not a status field on `Seat`" reasoning is
+  spelled out in prose immediately after the diagram).
+- **State machines**: both covered as their own `stateDiagram-v2` panels
+  — Seat (`AVAILABLE ⇄ LOCKED → BOOKED`, with both back-edges to
+  `AVAILABLE` named separately: TTL expiry and explicit cancel) and
+  Booking (`PENDING → CONFIRMED/EXPIRED/CANCELLED`), with prose explaining
+  where the two state machines couple (a terminal `Booking` state
+  triggers `SeatInventory.release()`).
+- **Design patterns**: all 5 covered as their own subsections — State
+  (Seat/Booking lifecycles), Strategy (pricing), Factory (seat/ticket
+  construction), Observer (hold-release notifications), and SOLID/OCP
+  threaded through the State and Strategy sections explicitly (not a
+  separate bolted-on paragraph).
+- **Database design**: all 5 covered — `erDiagram` schema, normalization
+  reasoning (why `SEAT_INVENTORY` is its own row per show+seat, and where
+  a denormalized read cache pays off on top of it), indexing strategy
+  (the `(show_id, state)` composite index), SQL-vs-Redis split for
+  committed state vs. TTL holds, and the `version` column's optimistic-
+  locking mechanics with a concrete `UPDATE ... WHERE version = ?`
+  statement.
+- **Trade-offs**: both covered — State pattern vs. enum+if/else, and
+  normalized vs. denormalized seat-status table — each naming what it
+  costs, not just what it wins.
+- **Worked example**: a dedicated sequence diagram (Priya vs. Marcus on
+  seat C12) traces the Redis `NX` fast-path rejection and the rarer
+  version-check retry path in one diagram, with a follow-up quiz item
+  reversing the ordering to check real understanding.
+- **Interview angle**: all 3 follow-ups covered — "walk me through your
+  classes," "how does this prevent double-booking at the code level"
+  (two independent guards named explicitly), and the pricing-strategy
+  extensibility probe.
+- **Practice & Self-Check**: 7 recap `QuizItem`s (pattern identification
+  + schema decisions) plus the open challenge (group bookings of
+  adjacent seats, atomic all-or-nothing) with a concrete reference answer
+  (a `GroupHold` aggregate, lock ordering to prevent deadlock,
+  compensating rollback) inside a collapsible `<details>` and a 5-item
+  `Rubric`. 6 additional inline `QuizItem`s appear after major concepts
+  throughout the body, beyond the closing recap quiz.
+
+**Nothing dropped.** Concept-lesson links this lesson would normally make
+(`LLD-01`, `LLD-03`, `LLD-05`, per `content/04-case-studies/SYLLABUS.md`'s
+CS-08 dependency list) are written inline instead, each flagged with a
+JSX comment (`{/* concept-dependency: LLD-XX not yet built, explained
+inline */}`) for a future pass to swap in real links once those concept
+lessons exist, per the ruling in `docs/superpowers/plans/TRACKER.md`.
+
+Verified rendering at `/case-studies/ticketmaster/lld` via `pnpm dev` +
+Playwright, by the controller: page renders with no console errors, the
+`classDiagram`, both `stateDiagram-v2` panels, the `erDiagram`, and the
+`sequenceDiagram` all render as SVG. Confirmed live interactivity — two
+`Rubric` checkboxes clicked, `SelfScoreBand` updated from "NOVICE — 0%
+COVERED" to "PRACTICING — 40% COVERED" — and checked contrast/legibility
+in both light and dark theme.
+
+**Bug found and fixed during controller verification:** this file (and 4
+of the other 5 newly-drafted lesson files) originally used raw HTML
+comments (`<!-- concept-dependency: ... -->`) for the concept-dependency
+markers per the original dispatch instructions, which MDX does not parse
+— `Unexpected character '!' ... to create a comment in MDX, use {/* text
+*/}`, a hard 500 on every affected route. Fixed by converting all 31
+occurrences across the 5 affected files to JSX comment syntax
+(`{/* ... */}`); this file's title frontmatter also had a duplicated
+`(LLD)` suffix (`lib/content.ts` already appends `(HLD)`/`(LLD)` to nav
+labels automatically) producing "(LLD) (LLD)" in the sidebar — fixed by
+removing the manual suffix from the frontmatter title.

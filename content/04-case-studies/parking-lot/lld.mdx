@@ -64,7 +64,7 @@ the classic over-modeling mistake in this problem: every extra class is
 another thing to keep in sync, so a noun only earns a class when it has
 its own identity and state, not just a value that another object owns.
 
-<!-- concept-dependency: LLD-02 not yet built, explained inline -->
+{/* concept-dependency: LLD-02 not yet built, explained inline */}
 Deciding *how* two classes relate matters as much as deciding *that*
 they relate. Three relationship strengths show up here: **composition**
 (a `Level` cannot outlive its `ParkingLot` — delete the lot, its levels
@@ -104,7 +104,7 @@ size class upward, not just look for "any free spot."
 
 ## Class diagram
 
-<!-- concept-dependency: LLD-04 not yet built, explained inline -->
+{/* concept-dependency: LLD-04 not yet built, explained inline */}
 A UML class diagram is the map of this design: boxes are classes with
 their fields and methods, and the lines between them are the
 relationships just decided above — a filled diamond for composition, an
@@ -224,7 +224,7 @@ the fee, record a `Payment`, release the spot, close the ticket.
 
 ## State machines
 
-<!-- concept-dependency: LLD-04 not yet built, explained inline -->
+{/* concept-dependency: LLD-04 not yet built, explained inline */}
 A state machine diagram shows every state an object can be in and every
 transition allowed between them. In LLD interviews it doubles as a bug
 hunt: the "back" edges (expiry, cancellation, rejection) are the ones
@@ -341,7 +341,7 @@ maintains a list of observers and calls each one directly on a state
 change, and it's the same shape the HLD side later scales up into a
 whole event-streaming pipeline for a network of lots.
 
-<!-- concept-dependency: LLD-04 not yet built, explained inline -->
+{/* concept-dependency: LLD-04 not yet built, explained inline */}
 **State (optional, advanced).** The Ticket lifecycle above could stay a
 plain enum with `if/else` branches checking `ticket.status`, or it
 could become a formal State pattern — one class per state
@@ -360,7 +360,7 @@ on "what if the lifecycle gets more complex."
 
 ## Database design
 
-<!-- concept-dependency: LLD-05 not yet built, explained inline -->
+{/* concept-dependency: LLD-05 not yet built, explained inline */}
 Translating the class diagram into a schema means each entity with its
 own identity and lifecycle gets a table, association fields become
 foreign keys, and normalization (splitting data so each fact lives in
