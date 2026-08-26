@@ -1,5 +1,6 @@
 import type { MDXComponents } from "mdx/types";
 import { DiagramPanel } from "@/components/lesson/DiagramPanel";
+import { D2Diagram } from "@/components/lesson/D2Diagram";
 import { QuizItem } from "@/components/lesson/QuizItem";
 import { Rubric } from "@/components/lesson/Rubric";
 import { SectionTracker } from "@/components/lesson/SectionTracker";
@@ -9,6 +10,7 @@ import { Point } from "@/components/lesson/Point";
 
 export const mdxComponents: MDXComponents = {
   DiagramPanel,
+  D2Diagram,
   QuizItem,
   Rubric,
   SectionTracker,
