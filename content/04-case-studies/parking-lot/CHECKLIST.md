@@ -6,8 +6,8 @@ drafted. Produced per
 with the output format amended by
 [docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md](../../../docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md).
 
-Status: LLD not started (primary side), HLD not started (secondary
-side). See [SYLLABUS.md](../../../SYLLABUS.md) /
+Status: LLD not started (primary side), HLD built (secondary side, see
+`hld.mdx`, completeness pass logged below). See [SYLLABUS.md](../../../SYLLABUS.md) /
 [04-case-studies/SYLLABUS.md](../SYLLABUS.md) (CS-03) for build
 priority — this checklist is a plan, not a built lesson.
 
@@ -63,76 +63,76 @@ many such facilities (HLD).
 
 ### 1. Problem framing
 
-- [ ] Reframe at the scale of a parking network operator
+- [x] Reframe at the scale of a parking network operator
       (SpotHero/ParkWhiz-style): thousands of independent facilities
       each with local inventory, needing real-time availability +
       search/reservation for a mobile app
-- [ ] Identify the new core problem: availability data originates at
+- [x] Identify the new core problem: availability data originates at
       the edge and must be aggregated/kept-fresh/served for geospatial
       queries at low latency — a data-freshness-and-fan-out problem,
       not object modeling
 
 ### 2. Requirements & capacity estimate
 
-- [ ] Geospatial search for nearby available parking
-- [ ] Near-real-time per-lot occupancy
-- [ ] Optional cross-lot reservation/booking
-- [ ] Partner ingestion API
-- [ ] Scale: thousands of lots, aggregate event volume up to tens of
+- [x] Geospatial search for nearby available parking
+- [x] Near-real-time per-lot occupancy
+- [x] Optional cross-lot reservation/booking
+- [x] Partner ingestion API
+- [x] Scale: thousands of lots, aggregate event volume up to tens of
       thousands of events/sec
-- [ ] Read path far higher volume than write path, sub-second read
+- [x] Read path far higher volume than write path, sub-second read
       latency
-- [ ] Consistency explicitly relaxed vs LLD: stale-by-seconds
+- [x] Consistency explicitly relaxed vs LLD: stale-by-seconds
       availability display is acceptable, double-booking
       money/reservations is not
 
 ### 3. Core content — architecture diagram
 
-- [ ] Edge layer: per-lot gate systems/IoT sensors publish
+- [x] Edge layer: per-lot gate systems/IoT sensors publish
       state-change events to an ingestion gateway, buffers locally,
       replays on reconnect
-- [ ] Ingestion/streaming layer: durable event log (Kafka-style),
+- [x] Ingestion/streaming layer: durable event log (Kafka-style),
       system of record per lot
-- [ ] Stream processors maintain current-state projections
-- [ ] Serving/cache layer (Redis-style, sub-100ms reads, source of
+- [x] Stream processors maintain current-state projections
+- [x] Serving/cache layer (Redis-style, sub-100ms reads, source of
       truth stays the event log + DB)
-- [ ] Geospatial index (geohash/quad-tree) over lot locations
-- [ ] API/gateway layer (search/reservation/partner-ingestion,
+- [x] Geospatial index (geohash/quad-tree) over lot locations
+- [x] API/gateway layer (search/reservation/partner-ingestion,
       load-balanced stateless services)
-- [ ] Reservation service as a separate bounded context (strong
+- [x] Reservation service as a separate bounded context (strong
       consistency) from live-occupancy (eventual consistency)
 
 ### 4. Core content — deep dives
 
-- [ ] Data model & partitioning: shard by lot_id/region; two distinct
+- [x] Data model & partitioning: shard by lot_id/region; two distinct
       data shapes — high-write append-only event stream vs low-write
       high-read aggregate/cache — get different storage strategies
-- [ ] Keeping availability fresh without hammering the DB: push-based
+- [x] Keeping availability fresh without hammering the DB: push-based
       updates via event stream -> cache invalidation, extends the LLD
       Observer pattern to network scale
-- [ ] Handling flaky edge connectivity: gateway-side buffering/replay +
+- [x] Handling flaky edge connectivity: gateway-side buffering/replay +
       periodic reconciliation job against the raw event log
-- [ ] Search fan-out: geospatial bounding-box/geohash-prefix lookup,
+- [x] Search fan-out: geospatial bounding-box/geohash-prefix lookup,
       then batch-fetch availability from cache rather than joining the
       live stream per request
 
 ### 5. Trade-offs
 
-- [ ] Strong consistency (reservations) vs eventual consistency (live
+- [x] Strong consistency (reservations) vs eventual consistency (live
       occupancy) — treating both as one model wastes cost/latency on
       the read-heavy majority
-- [ ] Cache/streaming projection vs direct-DB query (ops complexity vs
+- [x] Cache/streaming projection vs direct-DB query (ops complexity vs
       required for sub-second search at scale)
-- [ ] Centralized ingestion (simple, single blast radius) vs
+- [x] Centralized ingestion (simple, single blast radius) vs
       per-region ingestion clusters (resilient, lower-latency, more
       aggregation complexity)
 
 ### 6. Worked example
 
-- [ ] Trace: user opens app in Seattle -> geosearch request ->
+- [x] Trace: user opens app in Seattle -> geosearch request ->
       geospatial index returns 40 candidate lot IDs -> batch-read
       current availability from cache -> ranked results under a second
-- [ ] Concurrent trace: Lot #4821's gate reports a car entering ->
+- [x] Concurrent trace: Lot #4821's gate reports a car entering ->
       event lands in stream -> processor decrements count -> cache
       updated -> next search reflects the new count within the
       propagation-delay SLA (a few seconds) — illustrates the
@@ -140,13 +140,13 @@ many such facilities (HLD).
 
 ### 7. Interview angle
 
-- [ ] Follow-up: how does a lot going offline get reconciled
-- [ ] Follow-up: how does the reservation service avoid conflicting
+- [x] Follow-up: how does a lot going offline get reconciled
+- [x] Follow-up: how does the reservation service avoid conflicting
       with the live-occupancy feed
 
 ### 8. Practice & Self-Check
 
-- [ ] Open challenge: "A partner wants advance reservations that must
+- [x] Open challenge: "A partner wants advance reservations that must
       never double-book a spot, layered on top of the
       eventually-consistent live-occupancy feed. Sketch how the
       reservation service coordinates with the live-occupancy
@@ -277,5 +277,44 @@ many such facilities (HLD).
 
 ## Completeness Pass Log
 
-Not yet run — fill in when `hld.mdx`/`lld.mdx` are built, per
-CLAUDE.md's "After writing a lesson" rule.
+**`hld.mdx` — 2026-08-26.** Walked every item in the "HLD Checklist"
+section above against the finished lesson; all checked off `[x]`,
+nothing dropped. Notes:
+
+- Problem framing, requirements, and the six-layer architecture diagram
+  (edge -> ingestion gateway -> event log -> stream processors -> serving
+  cache + geospatial index -> API/gateway, with the reservation service
+  as a separate bounded context) all map directly to their checklist
+  items.
+- The capacity estimate works concrete numbers rather than asserting the
+  scale figures: ~12,000 facilities / ~1.7M spots, ~380 state-change
+  events/sec at peak vs. ~56,000 raw ingestion messages/sec once IoT
+  heartbeat traffic is counted (explaining *why* the checklist's "tens
+  of thousands of events/sec" figure is mostly liveness noise, not
+  signal), and ~160,000 cache reads/sec on the search path — a ~400:1
+  meaningful-read:write ratio.
+- All four deep dives (partitioning, freshness/push-based cache updates,
+  flaky-edge buffering+reconciliation, geospatial search fan-out) and
+  all three trade-offs are covered as their own subsections, each naming
+  its alternative explicitly per CONTENT-GUIDE.
+- The worked example is a single sequence diagram interleaving the
+  Seattle search trace and the Lot #4821 gate-event trace (per the
+  checklist's two bullets), used to make the eventual-consistency
+  trade-off concrete.
+- Both interview-angle follow-ups (lot-offline reconciliation,
+  reservation-vs-live-occupancy conflict) are answered directly, then
+  pointed at the open challenge for full mechanics.
+- The open design challenge uses the checklist's exact scenario
+  (reservations layered on the eventually-consistent feed), with a
+  concrete reference answer (`reserved_count` + `occupied_count`
+  combined at read time, reservation retirement on gate-entry match, TTL
+  expiry for no-shows) and a 5-item independently-checkable rubric
+  feeding the `<Rubric>`/`<SelfScoreBand>` widgets.
+- Nothing from the HLD checklist section was dropped. Concept-lesson
+  links that don't exist yet (HLD-01, 03, 05, 06, 07, 10, 11) are
+  explained inline instead, each flagged with an HTML
+  `<!-- concept-dependency: ... -->` comment per the TRACKER.md ruling,
+  so a future pass can swap in real links once those concept lessons are
+  built.
+- LLD checklist section is unaffected by this pass — left as-is for the
+  LLD lesson's own completeness pass.
