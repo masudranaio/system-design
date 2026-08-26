@@ -7,9 +7,11 @@ locked in
 its Format/Repository-structure sections are superseded by
 [docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md](docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md) —
 the app/component architecture, design tokens, and folder structure live
-there. Lesson-by-lesson build list and progress live in
-[SYLLABUS.md](SYLLABUS.md). Read all three before starting work in this
-repo if they're not already in context.
+there. Content quality rules (prose, diagrams, quizzes, self-check
+answers) live in [CONTENT-GUIDE.md](CONTENT-GUIDE.md) — read before
+drafting any lesson's actual content, not just its plan. Lesson-by-lesson
+build list and progress live in [SYLLABUS.md](SYLLABUS.md). Read all four
+before starting work in this repo if they're not already in context.
 
 ## Before writing any lesson
 
@@ -46,6 +48,9 @@ repo if they're not already in context.
 
 ## Writing the lesson
 
+- Follow [CONTENT-GUIDE.md](CONTENT-GUIDE.md) for prose, diagram, quiz,
+  and self-check-answer quality — it's the quality bar within each
+  section; this list (below) is the shape.
 - Follow the **Lesson template** in the design spec, as amended by
   [docs/superpowers/specs/2026-08-26-case-study-lesson-format-and-ticketmaster-design.md](docs/superpowers/specs/2026-08-26-case-study-lesson-format-and-ticketmaster-design.md)'s
   "Enhanced lesson template" section, for every lesson: problem framing →
