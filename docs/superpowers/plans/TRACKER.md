@@ -1,5 +1,54 @@
 # Implementation Plans Tracker
 
+## LIVE — Case Study Expansion Session (2026-08-27, cron-driven)
+
+**Started 2026-08-27.** Confirmed 24-task list, executed one task at a
+time, tracker updated after each. A `CronCreate` job (`d3e08e19`, every
+22 min) wakes this session to continue if it stops, and to propose the
+next batch once all 24 are done — do not stop until told to. D2 is the
+diagram engine for all work below; Mermaid is fallback-only if D2 is
+genuinely broken. Spec/plan:
+[case-study-expansion-and-content-retrofit-design.md](../specs/2026-08-27-case-study-expansion-and-content-retrofit-design.md),
+[case-study-expansion-execution-plan.md](2026-08-27-case-study-expansion-execution-plan.md),
+[d2-diagrams-and-sticky-layout-implementation.md](2026-08-27-d2-diagrams-and-sticky-layout-implementation.md).
+
+**Phase A — D2 diagram engine (Mermaid fallback if D2 can't be fixed)**
+- [x] A1. Fix D2 compile API mismatch, finish `render-d2.ts` + icon map, verify build, commit — **done**, commit `63e3970`. Root cause: `compile(input, options)`'s second arg is `{options: CompileOptions}`, not `CompileOptions` directly (`d2/index.d.ts` — no shipped `@types` package, had to read the real `.d.ts` inside the installed package). Fixed to `d2.compile(source, { options: { layout: "dagre" } })`. `pnpm build` clean, 31/31 tests pass.
+- [ ] A2. Extract shared `DiagramChrome`, build `D2Diagram` Server Component, register in MDX
+- [ ] A3. Build `TableOfContents` scroll-aware right-rail
+- [ ] A4. Make `Sidebar` sticky/independently scrollable
+- [ ] A5. Wire `LessonShell` + `rehype-slug` into all 5 page routes, remove `SectionTracker`
+- [ ] A6. Full Playwright verification of engine + layout shell, both themes
+
+**Phase B — Retrofit the 3 existing case studies (D2 diagrams, new content standard)**
+- [ ] B1. Ticketmaster `hld.mdx`
+- [ ] B2. Ticketmaster `lld.mdx`
+- [ ] B3. Parking Lot `hld.mdx`
+- [ ] B4. Parking Lot `lld.mdx`
+- [ ] B5. Amazon Locker `hld.mdx`
+- [ ] B6. Amazon Locker `lld.mdx`
+
+**Phase C — 7 new case studies (checklist + full lesson each)**
+- [ ] C1. Ride-Sharing (CS-09) `hld.mdx`
+- [ ] C2. Netflix (CS-10) `hld.mdx`
+- [ ] C3. Food Panda (CS-11) `hld.mdx`
+- [ ] C4. Event Tracking System (CS-12) `lld.mdx`
+- [ ] C5. Notification Service (CS-13) `lld.mdx`
+- [ ] C6. Dropbox (new CS-14) `hld.mdx`
+- [ ] C7. Chat/WhatsApp (new CS-15) `hld.mdx`
+
+**Phase D — Visual verification pass, both themes**
+- [ ] D1. Visual pass: 7 new lessons
+- [ ] D2. Visual pass: 6 retrofitted lessons
+
+**Phase E — Tracking & continuation**
+- [ ] E1. Update `SYLLABUS.md` + this table with final status
+- [x] E2. Create the `CronCreate` recurring wake-up job — done, job `d3e08e19`, every 22 min, expires after 7 days (session-only — will need recreating if the session restarts)
+- [ ] E3. Once all 24 done, propose + start next batch from the Extended list
+
+---
+
+
 Index of every implementation plan in this directory, with status. This
 file is the answer to "what's been executed vs. just planned" — update
 it whenever a plan starts, finishes, or a new one is written. Status

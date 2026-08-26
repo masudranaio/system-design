@@ -29,11 +29,19 @@ Status: `[ ]` not started, `[~]` in progress, `[x]` done.
 | CS-11 | Food Panda (Food Delivery) | hld | lld — order/restaurant/courier state machine, matching-algorithm class design | HLD-01, 03, 06, 08, 10; LLD-01–06 | [ ] |
 | CS-12 | Event Tracking System (log/analytics pipeline) | lld | hld — distributed ingestion/aggregation at scale (promoted from "Logging Service" below) | LLD-01–06 | [ ] |
 | CS-13 | Notification Service (email/SMS/push) | lld | hld — multi-provider fan-out and failover at scale | LLD-01–06 | [ ] |
+| CS-14 | Dropbox (File Sync/Storage) | hld | lld — file/chunk versioning classes, sync conflict resolution | HLD-01, 06, 07, 09, 10; LLD-01–06 | [ ] |
+| CS-15 | Chat / WhatsApp (Real-Time Messaging) | hld | lld — message/delivery-status state machine | HLD-01, 03, 06, 08, 10; LLD-01–06 | [ ] |
 
 Promoted from the extended list below into this priority table:
 Ride-Sharing (was "Uber / Ride-Sharing"), Event Tracking System (was
-"Logging Service"). Netflix, Food Panda, and Notification Service are
-new additions, not previously in either list.
+"Logging Service"), Dropbox, Chat/WhatsApp. Netflix, Food Panda, and
+Notification Service are new additions, not previously in either list.
+CS-14/CS-15 added 2026-08-27 alongside CS-09–13 to round the "fix the
+last 3, add 7 more" batch out to 10 total systems built, per explicit
+user authorization to pick 2 more from the extended list — chosen for
+being the most architecturally distinct remaining systems (storage
+sync/dedup, and real-time bidirectional messaging) rather than
+overlapping an already-covered problem shape.
 
 ## Extended list (scope for later, added as picked up)
 
@@ -41,9 +49,7 @@ new additions, not previously in either list.
 |---|---|---|
 | Pastebin | hld | lld — paste/expiry schema, ID generation |
 | Twitter / News Feed | hld | lld — Tweet/Feed model classes, ranking service |
-| Chat / WhatsApp | hld | lld — message/delivery-status state machine |
 | YouTube | hld | lld — video/encoding pipeline classes, playback state |
-| Dropbox | hld | lld — file/chunk versioning classes, sync conflict resolution |
 | Instagram | hld | lld — post/feed model classes |
 | Web Crawler | hld | lld — URL frontier, crawler worker classes |
 | Search Autocomplete | hld | lld — trie/index class design |
@@ -54,12 +60,16 @@ new additions, not previously in either list.
 
 ## Progress
 
-Priority: 3 / 13 primary sides built, 3 / 13 secondary sides built
+Priority: 3 / 15 primary sides built, 3 / 15 secondary sides built
 (Ticketmaster, Parking Lot, Amazon Locker — both sides each). CS-09
-through CS-13 (Ride-Sharing, Netflix, Food Panda, Event Tracking,
-Notification Service) added 2026-08-27, primary side only for this
-pass — secondary sides deferred, same "opportunistic, added later"
-pattern as CS-01–08. Note: none of these link back to concept lessons
+through CS-15 (Ride-Sharing, Netflix, Food Panda, Event Tracking,
+Notification Service, Dropbox, Chat/WhatsApp) added 2026-08-27, primary
+side only for this pass — secondary sides deferred, same
+"opportunistic, added later" pattern as CS-01–08. This batch's target
+is 10 total systems fully built (3 existing retrofitted + 7 new) before
+moving to the next batch — see
+[docs/superpowers/plans/TRACKER.md](../../docs/superpowers/plans/TRACKER.md)'s
+live session log. Note: none of these link back to concept lessons
 yet, since HLD/LLD concept modules (0/12 built each) don't exist — each
 case study lesson explains needed concepts inline instead, flagged
 with `concept-dependency` comments for a future pass to convert to
