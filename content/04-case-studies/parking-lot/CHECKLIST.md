@@ -6,7 +6,7 @@ drafted. Produced per
 with the output format amended by
 [docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md](../../../docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md).
 
-Status: LLD not started (primary side), HLD not started (secondary
+Status: LLD built (`lld.mdx`, primary side), HLD not started (secondary
 side). See [SYLLABUS.md](../../../SYLLABUS.md) /
 [04-case-studies/SYLLABUS.md](../SYLLABUS.md) (CS-03) for build
 priority — this checklist is a plan, not a built lesson.
@@ -20,43 +20,48 @@ many such facilities (HLD).
 
 ### Functional Requirements
 
-- [ ] Support multiple vehicle types (motorcycle, car/compact, large
+(Checked below at the single-facility scope `lld.mdx` covers; the
+multi-facility aggregate view referenced in the last item is HLD's job,
+not re-checked here.)
+
+- [x] Support multiple vehicle types (motorcycle, car/compact, large
       vehicle/truck/bus) with type-to-spot compatibility rules
-- [ ] Automatically assign an available, compatible spot on entry
+- [x] Automatically assign an available, compatible spot on entry
       (system-assigned, not driver-chosen)
-- [ ] Issue a ticket at entry recording vehicle, spot, and entry
+- [x] Issue a ticket at entry recording vehicle, spot, and entry
       timestamp
-- [ ] Validate the ticket at exit, compute the fee, and free the spot
-- [ ] Support multiple levels/floors, each with a configurable number of
+- [x] Validate the ticket at exit, compute the fee, and free the spot
+- [x] Support multiple levels/floors, each with a configurable number of
       spots of different sizes
-- [ ] Support multiple entry/exit gates operating concurrently
-- [ ] Reject entry when no compatible spot exists (lot/level full);
+- [x] Support multiple entry/exit gates operating concurrently
+- [x] Reject entry when no compatible spot exists (lot/level full);
       reject exit on invalid, already-used, or lost tickets
-- [ ] Track real-time occupancy/availability (per level and per lot)
+- [x] Track real-time occupancy/availability (per level and per lot) —
+      per-lot only; cross-lot aggregation is HLD scope
 
 ### Non-Functional Requirements
 
-- [ ] Concurrency: multiple gates issuing tickets and freeing spots
+- [x] Concurrency: multiple gates issuing tickets and freeing spots
       simultaneously must not double-assign a spot
-- [ ] Scale: a garage with ~5-10 levels and hundreds to a couple
+- [x] Scale: a garage with ~5-10 levels and hundreds to a couple
       thousand spots per lot; low single-digit transactions/sec per lot
       — a deliberately small-scale problem, don't over-engineer for
       web-scale
-- [ ] Low latency for the entry/exit hot path
-- [ ] Data integrity: a ticket must map to exactly one active parking
+- [x] Low latency for the entry/exit hot path
+- [x] Data integrity: a ticket must map to exactly one active parking
       session; no orphaned "occupied" spots
-- [ ] Availability: entry/exit should keep working even if non-critical
+- [x] Availability: entry/exit should keep working even if non-critical
       subsystems (e.g. a display board) are down
 
 ### Explicitly Out of Scope
 
-- [ ] Physical hardware integration (gate arms, cameras, IoT sensors) —
+- [x] Physical hardware integration (gate arms, cameras, IoT sensors) —
       mention conceptually only
-- [ ] Payment gateway integration details (pricing is a pluggable
+- [x] Payment gateway integration details (pricing is a pluggable
       strategy, not a full checkout flow)
-- [ ] Full advance-reservation/booking system — note as an extension
-- [ ] User accounts, authentication, mobile app UI
-- [ ] Detailed pricing/discount business rules beyond showing pricing is
+- [x] Full advance-reservation/booking system — note as an extension
+- [x] User accounts, authentication, mobile app UI
+- [x] Detailed pricing/discount business rules beyond showing pricing is
       pluggable
 
 ## HLD Checklist (`hld.mdx`) — secondary side: multi-location network, distributed availability service
@@ -159,116 +164,119 @@ many such facilities (HLD).
 
 ### 1. Problem framing
 
-- [ ] Frame the problem as the "Hello World" of LLD interviews
-- [ ] Interviewer expects clarifying questions first (vehicle types?
+- [x] Frame the problem as the "Hello World" of LLD interviews
+- [x] Interviewer expects clarifying questions first (vehicle types?
       multi-level? multi-gate? pricing model? reservations in scope?)
       before naming a class
-- [ ] Set the boundary: single-facility object model now,
+- [x] Set the boundary: single-facility object model now,
       multi-location concerns deferred to HLD
 
 ### 2. Requirements at the object level
 
-- [ ] Translate functional requirements into nouns-that-need-behavior:
+- [x] Translate functional requirements into nouns-that-need-behavior:
       ParkingLot, Level, Spot, Vehicle, Ticket, Gate, Payment/Pricing
-- [ ] Warn against turning every noun into a class (e.g. "fee" is
+- [x] Warn against turning every noun into a class (e.g. "fee" is
       behavior, not an entity)
-- [ ] Decide cardinalities: one ParkingLot -> many Levels -> many
+- [x] Decide cardinalities: one ParkingLot -> many Levels -> many
       Spots; one Ticket <-> one Vehicle <-> one Spot
-- [ ] Decide the vehicle-to-spot compatibility rule explicitly
+- [x] Decide the vehicle-to-spot compatibility rule explicitly
 
 ### 3. Class diagram
 
-- [ ] Mermaid class diagram (`classDiagram`) covering ParkingLot (id,
+- [x] Mermaid class diagram (`classDiagram`) covering ParkingLot (id,
       name, address, List\<Level\>, List\<EntryGate\>,
       List\<ExitGate\>, owns parkVehicle()/unparkVehicle())
-- [ ] Level/ParkingFloor (floor number, List\<Spot\>)
-- [ ] Spot (id, size/type enum MOTORCYCLE/COMPACT/LARGE, status,
+- [x] Level/ParkingFloor (floor number, List\<Spot\>)
+- [x] Spot (id, size/type enum MOTORCYCLE/COMPACT/LARGE, status,
       current Vehicle ref)
-- [ ] Vehicle (abstract base: license plate, size; subclassed
+- [x] Vehicle (abstract base: license plate, size; subclassed
       Motorcycle/Car/Truck-Bus)
-- [ ] Ticket (id, Vehicle ref, Spot ref, entry/exit timestamp, status)
-- [ ] Gate (EntryGate issues ticket + triggers assignment; ExitGate
+- [x] Ticket (id, Vehicle ref, Spot ref, entry/exit timestamp, status)
+- [x] Gate (EntryGate issues ticket + triggers assignment; ExitGate
       validates + triggers pricing + release)
-- [ ] Payment/PricingStrategy (computes fee from duration + vehicle
+- [x] Payment/PricingStrategy (computes fee from duration + vehicle
       type)
-- [ ] DisplayBoard (optional, subscribes to occupancy changes)
-- [ ] Relationships: composition ParkingLot-Level-Spot, association
+- [x] DisplayBoard (optional, subscribes to occupancy changes)
+- [x] Relationships: composition ParkingLot-Level-Spot, association
       Ticket-Vehicle and Ticket-Spot, Gate depends on ParkingLot's
       allocate/release ops, PricingStrategy/SpotAssignmentStrategy
       injected not owned
 
 ### 4. State machines
 
-- [ ] Spot state machine: AVAILABLE -> RESERVED(optional) -> OCCUPIED
+- [x] Spot state machine: AVAILABLE -> RESERVED(optional) -> OCCUPIED
       -> AVAILABLE
-- [ ] Ticket state machine: ISSUED(active) -> PAID/EXITED(closed),
+- [x] Ticket state machine: ISSUED(active) -> PAID/EXITED(closed),
       with edge states LOST (flat penalty fee) and
       INVALID/ALREADY_USED (rejected re-use)
-- [ ] Spot+Ticket transitions must be atomic together — a partial
+- [x] Spot+Ticket transitions must be atomic together — a partial
       update is the classic bug interviewers probe for
 
 ### 5. Design patterns
 
-- [ ] Singleton (ParkingLot, one instance; note testability/
+- [x] Singleton (ParkingLot, one instance; note testability/
       global-state trade-off, DI as alternative)
-- [ ] Strategy x2: SpotAssignmentStrategy (nearest-first vs best-fit vs
+- [x] Strategy x2: SpotAssignmentStrategy (nearest-first vs best-fit vs
       level-balancing); PricingStrategy (flat/tiered/surge) — flag
       this double-use as the key insight of the problem
-- [ ] Factory (VehicleFactory/SpotFactory for subtype construction)
-- [ ] Observer (DisplayBoard subscribes to occupancy changes, bridges
+- [x] Factory (VehicleFactory/SpotFactory for subtype construction)
+- [x] Observer (DisplayBoard subscribes to occupancy changes, bridges
       to HLD side)
-- [ ] State (optional advanced answer: Ticket lifecycle as formal
+- [x] State (optional advanced answer: Ticket lifecycle as formal
       State pattern vs enum+if/else)
 
 ### 6. Database design
 
-- [ ] Tables: parking_lot, level, spot(lot_id, level_id, type,
+- [x] Tables: parking_lot, level, spot(lot_id, level_id, type,
       status), vehicle(plate, type), ticket(vehicle_id, spot_id,
       entry_time, exit_time, status, amount_paid), payment(ticket_id,
       method, amount, paid_at)
-- [ ] Normalize spot state into spot.status (not derived by scanning
+- [x] Normalize spot state into spot.status (not derived by scanning
       tickets) for O(1) "is anything free" checks
-- [ ] Indexing: spot(level_id, type, status) for the hot free-spot
+- [x] Indexing: spot(level_id, type, status) for the hot free-spot
       query
-- [ ] Indexing: unique index on ticket.vehicle_id WHERE
-      status='ACTIVE' to catch double-entry
-- [ ] Indexing: index ticket.spot_id for exit lookups
-- [ ] Concurrency: row-level locking or atomic UPDATE...WHERE
+- [x] Indexing: unique index on ticket.vehicle_id WHERE
+      status='ACTIVE' to catch double-entry — implemented as
+      `WHERE status = 'ISSUED'` in `lld.mdx` (the lesson's own active
+      state name, per its Ticket state machine, used consistently
+      instead of introducing a second synonym)
+- [x] Indexing: index ticket.spot_id for exit lookups
+- [x] Concurrency: row-level locking or atomic UPDATE...WHERE
       status='AVAILABLE' (compare-and-set) to avoid double-assignment
 
 ### 7. Trade-offs
 
-- [ ] Best-fit vs nearest-fit spot assignment (waste vs UX vs compute)
-- [ ] Push (Observer) vs poll for occupancy display (instant but
+- [x] Best-fit vs nearest-fit spot assignment (waste vs UX vs compute)
+- [x] Push (Observer) vs poll for occupancy display (instant but
       coupled vs simple but laggy — resurfaces at HLD scale)
-- [ ] Singleton vs DI ParkingLot (matches "one lot" vs testability)
+- [x] Singleton vs DI ParkingLot (matches "one lot" vs testability)
 
 ### 8. Worked example
 
-- [ ] Sequence diagram: Car arrives at EntryGate-2 -> ParkingLot asks
+- [x] Sequence diagram: Car arrives at EntryGate-2 -> ParkingLot asks
       Level 3 for a free COMPACT-or-larger spot via
       SpotAssignmentStrategy -> Level returns Spot 3-047 -> spot
       atomically flips OCCUPIED, Ticket T-1042 issued -> DisplayBoard
       notified, decrements count
-- [ ] Continue the trace: 2 hours later, exit at ExitGate-1 -> ticket
+- [x] Continue the trace: 2 hours later, exit at ExitGate-1 -> ticket
       validated -> pricing computes fee -> payment recorded -> Spot
       flips AVAILABLE, Ticket closes -> DisplayBoard increments
-- [ ] Shows the atomic-transition point from the state machine section
+- [x] Shows the atomic-transition point from the state machine section
       concretely
 
 ### 9. Interview angle
 
-- [ ] Follow-up: "How would you support advance reservation — how does
+- [x] Follow-up: "How would you support advance reservation — how does
       that change the Spot state machine and assignment strategy?"
-- [ ] Follow-up: "Two gates process entries at the same instant, both
+- [x] Follow-up: "Two gates process entries at the same instant, both
       see the same spot free — walk through exactly how your code
       prevents double-assignment"
-- [ ] Follow-up: "How would you add per-vehicle-type or time-of-day
+- [x] Follow-up: "How would you add per-vehicle-type or time-of-day
       surge pricing without modifying Ticket or Gate?"
 
 ### 10. Practice & Self-Check
 
-- [ ] Open challenge: "Extend the design to support handicapped and
+- [x] Open challenge: "Extend the design to support handicapped and
       EV-charging spots, where an EV spot enforces a max stay duration
       and different pricing, and a handicapped spot requires a permit
       check at entry. Update class diagram, state machines, identify

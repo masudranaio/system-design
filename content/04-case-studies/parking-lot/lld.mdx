@@ -1,0 +1,700 @@
+---
+title: "Parking Lot — Low-Level Design"
+module: "04-case-studies/parking-lot"
+---
+
+<SectionTracker
+  sections={["Problem framing", "Core content", "Trade-offs", "Worked example", "Interview angle", "Practice & self-check"]}
+  active="Problem framing"
+/>
+
+## Problem framing
+
+Parking lot is the "Hello World" of low-level design interviews — not
+because it's trivial, but because it's small enough to fully model in
+45 minutes while still forcing every core LLD skill: turning nouns into
+classes, picking the right relationships between them, choosing patterns
+that make future change cheap, and keeping state transitions safe under
+concurrent access. If you can't structure this one cleanly, a harder
+LLD problem won't go better.
+
+A candidate who starts naming classes immediately is already behind. The
+interviewer expects clarifying questions first:
+
+- How many vehicle types does the lot support, and do larger vehicles
+  ever fit in smaller spots?
+- Is the lot a single level or several, and can a spot search span
+  levels?
+- How many entry/exit gates run at once — this determines whether
+  concurrency is even in scope?
+- Is pricing flat, tiered by duration, or does it vary by vehicle type?
+- Are advance reservations in scope, or is every vehicle a walk-up?
+
+This lesson answers those questions the way most interviews settle
+them: multiple vehicle types with a compatibility rule, multiple
+levels, multiple concurrent gates, tiered pricing, no reservations (the
+open challenge at the end extends the design instead). The boundary for
+this lesson is one facility — a single `ParkingLot` instance with its
+own levels, spots, and gates. Coordinating *many* facilities (a phone
+app showing nearby availability across a whole city) is a different
+problem with a different bottleneck — that's the
+[HLD companion lesson](/case-studies/parking-lot/hld) once it exists,
+and it's why this lesson never worries about network partitions or
+geospatial search.
+
+<QuizItem
+  question="Why does a strong LLD answer start with clarifying questions instead of a class diagram?"
+  answer="The requirements decide the design — e.g. whether larger vehicles can use smaller spots changes the compatibility rule, and whether reservations are in scope changes the Spot state machine. Naming classes before settling those questions means redoing work once the interviewer answers them anyway."
+/>
+
+## Requirements at the object level
+
+Translate the functional requirements into nouns, then ask which nouns
+need their own behavior and which are just data on another noun's
+behavior.
+
+**Nouns that become classes:** `ParkingLot`, `Level`, `Spot`, `Vehicle`
+(and its subtypes), `Ticket`, `EntryGate`/`ExitGate`, `Payment`, and one
+optional observer, `DisplayBoard`.
+
+**Nouns that don't:** a parking *fee* is not an entity — it's a number
+computed by a `PricingStrategy` from a ticket's duration and vehicle
+type. Modeling "Fee" as its own class with no independent lifecycle is
+the classic over-modeling mistake in this problem: every extra class is
+another thing to keep in sync, so a noun only earns a class when it has
+its own identity and state, not just a value that another object owns.
+
+<!-- concept-dependency: LLD-02 not yet built, explained inline -->
+Deciding *how* two classes relate matters as much as deciding *that*
+they relate. Three relationship strengths show up here: **composition**
+(a `Level` cannot outlive its `ParkingLot` — delete the lot, its levels
+go with it), **association** (a `Ticket` references a `Vehicle` and a
+`Spot`, but neither owns the other — closing a ticket doesn't destroy
+the vehicle), and **dependency** (a `Gate` calls into `ParkingLot`'s
+allocation methods without holding a permanent reference to any one
+`Spot`). Getting this right up front avoids a design where deleting one
+object accidentally cascades into deleting objects it merely referenced.
+
+The cardinalities for this lot:
+
+- One `ParkingLot` → many `Level` (composition)
+- One `Level` → many `Spot` (composition)
+- One `Ticket` ↔ exactly one `Vehicle`, one `Spot`, active for the
+  duration of a single visit (association, time-bounded)
+- One `ParkingLot` → many `EntryGate`, many `ExitGate` (composition)
+
+**Vehicle-to-spot compatibility rule** — the interview usually expects
+this stated explicitly, not left implicit: a vehicle may park in any
+spot sized for it *or larger*, never smaller.
+
+| Vehicle | `MOTORCYCLE` spot | `COMPACT` spot | `LARGE` spot |
+|---|---|---|---|
+| Motorcycle | yes | yes | yes |
+| Car | no | yes | yes |
+| Bus / truck | no | no | yes |
+
+This one rule is what makes "find a spot" more than a linear scan — the
+assignment strategy has to search spot types from the vehicle's exact
+size class upward, not just look for "any free spot."
+
+<QuizItem
+  question="A motorcycle arrives and the only free spots are two LARGE spots and zero MOTORCYCLE or COMPACT spots. Does it park?"
+  answer="Yes — the compatibility rule allows a vehicle to use any spot sized for it or larger. A motorcycle can use a MOTORCYCLE, COMPACT, or LARGE spot; it's wasteful (occupying a spot a bus needs later) but not invalid. This waste-vs-availability tension is exactly what the spot-assignment strategy trade-off below addresses."
+/>
+
+## Class diagram
+
+<!-- concept-dependency: LLD-04 not yet built, explained inline -->
+A UML class diagram is the map of this design: boxes are classes with
+their fields and methods, and the lines between them are the
+relationships just decided above — a filled diamond for composition, an
+open diamond for aggregation, a plain arrow for association, and a
+dashed arrow for a dependency that doesn't hold a lasting reference.
+
+<DiagramPanel title="Parking lot object model" type="class" chart={`
+classDiagram
+  class ParkingLot {
+    -id: string
+    -name: string
+    -address: string
+    -levels: List~Level~
+    -entryGates: List~EntryGate~
+    -exitGates: List~ExitGate~
+    +parkVehicle(vehicle: Vehicle) Ticket
+    +unparkVehicle(ticket: Ticket) Payment
+  }
+  class Level {
+    -floorNumber: int
+    -spots: List~Spot~
+    +findAvailableSpot(type: SpotType) Spot
+  }
+  class Spot {
+    -id: string
+    -type: SpotType
+    -status: SpotStatus
+    -occupiedBy: Vehicle
+    +assign(vehicle: Vehicle) bool
+    +release() void
+  }
+  class SpotType {
+    <<enumeration>>
+    MOTORCYCLE
+    COMPACT
+    LARGE
+  }
+  class Vehicle {
+    <<abstract>>
+    -licensePlate: string
+    -size: SpotType
+  }
+  class Motorcycle
+  class Car
+  class Bus
+  Vehicle <|-- Motorcycle
+  Vehicle <|-- Car
+  Vehicle <|-- Bus
+  class Ticket {
+    -id: string
+    -vehicle: Vehicle
+    -spot: Spot
+    -entryTime: DateTime
+    -exitTime: DateTime
+    -status: TicketStatus
+  }
+  class EntryGate {
+    -id: string
+    +issueTicket(vehicle: Vehicle) Ticket
+  }
+  class ExitGate {
+    -id: string
+    +processExit(ticket: Ticket) Payment
+  }
+  class SpotAssignmentStrategy {
+    <<interface>>
+    +findSpot(level: Level, type: SpotType) Spot
+  }
+  class PricingStrategy {
+    <<interface>>
+    +calculateFee(ticket: Ticket) decimal
+  }
+  class Payment {
+    -id: string
+    -ticket: Ticket
+    -method: string
+    -amount: decimal
+    -paidAt: DateTime
+  }
+  class DisplayBoard {
+    +onOccupancyChanged(level: Level, freeCount: int) void
+  }
+
+  ParkingLot "1" *-- "many" Level : composition
+  Level "1" *-- "many" Spot : composition
+  ParkingLot "1" o-- "many" EntryGate : composition
+  ParkingLot "1" o-- "many" ExitGate : composition
+  Ticket "1" --> "1" Vehicle : association
+  Ticket "1" --> "1" Spot : association
+  Ticket "1" --> "0..1" Payment : association
+  EntryGate ..> ParkingLot : depends on
+  ExitGate ..> ParkingLot : depends on
+  ParkingLot ..> SpotAssignmentStrategy : uses (injected)
+  ParkingLot ..> PricingStrategy : uses (injected)
+  ParkingLot ..> DisplayBoard : notifies
+`} />
+
+*Read this as: `ParkingLot` owns its levels and gates outright
+(composition — they don't exist independently), while a `Ticket`
+merely points at a `Vehicle` and a `Spot` it doesn't own (association —
+closing the ticket doesn't delete either). `SpotAssignmentStrategy` and
+`PricingStrategy` are dashed dependencies deliberately, not fields
+`ParkingLot` constructs itself — that's the Strategy pattern, covered
+next.*
+
+`EntryGate.issueTicket()` is the entry hot path: it calls into
+`ParkingLot.parkVehicle()`, which asks a `Level` for a compatible free
+`Spot` via the injected `SpotAssignmentStrategy`, flips that spot to
+occupied, and creates the `Ticket`. `ExitGate.processExit()` is the
+reverse: validate the ticket, ask the injected `PricingStrategy` for
+the fee, record a `Payment`, release the spot, close the ticket.
+
+<QuizItem
+  question="Why is Ticket → Spot modeled as an association instead of composition, given that Level → Spot is composition?"
+  answer="A Spot has its own lifecycle independent of any one ticket — it exists before a vehicle arrives and after it leaves, and outlives thousands of tickets over its life. Composition would wrongly imply the spot is destroyed when the ticket closes."
+/>
+
+## State machines
+
+<!-- concept-dependency: LLD-04 not yet built, explained inline -->
+A state machine diagram shows every state an object can be in and every
+transition allowed between them. In LLD interviews it doubles as a bug
+hunt: the "back" edges (expiry, cancellation, rejection) are the ones
+candidates forget, and they're exactly what an interviewer probes for.
+
+### Spot lifecycle
+
+<DiagramPanel title="Spot state machine" type="state" chart={`
+stateDiagram-v2
+  [*] --> AVAILABLE
+  AVAILABLE --> RESERVED : reservation placed (extension, not base scope)
+  RESERVED --> AVAILABLE : reservation expires or is cancelled
+  RESERVED --> OCCUPIED : reserving vehicle arrives, checks in
+  AVAILABLE --> OCCUPIED : vehicle enters, spot assigned (atomic CAS)
+  OCCUPIED --> AVAILABLE : vehicle exits, fee settled, spot released
+`} />
+
+`RESERVED` is drawn in even though this lesson's base scope has no
+reservation system — it's the state the open design challenge at the
+end will wire up, and showing the extension point here (rather than
+inventing it from scratch later) is itself a small design decision
+worth stating out loud in an interview.
+
+### Ticket lifecycle
+
+<DiagramPanel title="Ticket state machine" type="state" chart={`
+stateDiagram-v2
+  [*] --> ISSUED : EntryGate creates ticket, spot assigned
+  ISSUED --> PAID : valid ticket presented, fee collected, spot released
+  ISSUED --> LOST : driver reports the physical ticket lost
+  LOST --> PAID : flat lost-ticket penalty charged, spot released
+  PAID --> [*] : ticket archived
+  PAID --> REJECTED : same ticket ID presented again at any gate
+  REJECTED --> [*] : exit denied, no state change, security alerted
+  [*] --> REJECTED : unrecognized or forged ticket ID presented
+`} />
+
+`REJECTED` is a dead end reachable from two different starting points —
+a used-up `PAID` ticket presented again, or a ticket ID that never
+existed. Both must produce the same outward behavior (deny exit, spot
+untouched) without mutating any real ticket's state, which is why
+`REJECTED` isn't a status stored on a `Ticket` row at all — it's the
+outcome when `ExitGate` fails to find an `ISSUED` or `LOST` ticket
+matching the presented ID.
+
+The transition that matters most for correctness is `ISSUED → PAID`:
+it isn't really one transition, it's two that must succeed or fail
+together — `Spot.status: OCCUPIED → AVAILABLE` and
+`Ticket.status: ISSUED → PAID`. Flip the spot free without closing the
+ticket and a second vehicle can be assigned that spot while the first
+vehicle's ticket still claims it's parked. Close the ticket without
+freeing the spot and the spot stays permanently unavailable — an
+orphaned "occupied" spot, exactly the bug the non-functional
+requirements call out. This pair must be updated in one atomic unit of
+work, not two separate calls.
+
+<QuizItem
+  question="A driver's ticket is scanned twice at the same exit gate two seconds apart (a network retry resent the request). What should happen the second time?"
+  answer="The second scan finds the ticket already in PAID, not ISSUED — it's treated as a REJECTED replay: exit is denied a second charge and the spot, already released on the first scan, is left untouched. This is why exit processing must check current status before acting, not just blindly re-run the payment-and-release logic."
+/>
+
+## Design patterns
+
+Four patterns do the real work in this design, and one is a judgment
+call.
+
+**Singleton — `ParkingLot`.** The problem statement is naturally
+singular: one facility, one instance holding the canonical list of
+levels and gates. The textbook answer wraps this in a Singleton (a
+class that hard-codes "there will only ever be one instance of me" via
+a private constructor and a static accessor) so nothing accidentally
+constructs a second, out-of-sync lot. The trade-off, and worth stating
+in an interview: a hard-coded Singleton makes unit tests harder — every
+test that touches `ParkingLot` shares the same global instance unless
+you add a reset hook — and it doesn't scale to "what if this codebase
+later runs two lots in one process." Dependency injection (construct
+one `ParkingLot` instance in a composition root, hand it to every gate
+that needs it) gets the same "exactly one instance in practice"
+outcome without baking the constraint into the class itself, at the
+cost of the caller now being responsible for not constructing a second
+one. Either answer is acceptable if you name why you picked it.
+
+**Strategy, twice.** This problem's signature move is that *two*
+independent decisions are each swappable behavior, not one:
+
+- `SpotAssignmentStrategy` picks which free spot a vehicle gets —
+  nearest-to-entrance-first, best-fit (smallest compatible spot,
+  minimizing waste), or level-balancing (spread load so no one level
+  fills first).
+- `PricingStrategy` computes the fee from a ticket's duration and
+  vehicle type — flat-rate, tiered-by-hour, or time-of-day surge.
+
+Both are injected into `ParkingLot` as interfaces rather than hardcoded
+as methods on `ParkingLot` itself. The reason is the same reason twice:
+swapping the pricing model for a holiday surge rate shouldn't require
+touching `Ticket`, `Gate`, or the assignment logic at all — only the
+one class that implements `PricingStrategy`. Recognizing that this
+problem needs Strategy in *two unrelated places* is the detail that
+separates a strong answer from an adequate one.
+
+**Factory — `VehicleFactory`.** Given a license plate and a size hint
+from the gate's sensor (or a manual attendant entry), the factory
+constructs the right `Vehicle` subclass (`Motorcycle`, `Car`, `Bus`)
+without the gate code needing an `if/else` on vehicle type. Adding a
+fourth vehicle type later — say, oversized delivery vans — means adding
+one subclass and one factory branch, not hunting through gate code for
+every place vehicle type was checked.
+
+**Observer — `DisplayBoard`.** Every time a spot's status flips,
+`ParkingLot` notifies subscribed `DisplayBoard` instances with the new
+free count for that level, instead of the display polling the lot on a
+timer. This is a push relationship: the subject (`ParkingLot`)
+maintains a list of observers and calls each one directly on a state
+change, and it's the same shape the HLD side later scales up into a
+whole event-streaming pipeline for a network of lots.
+
+<!-- concept-dependency: LLD-04 not yet built, explained inline -->
+**State (optional, advanced).** The Ticket lifecycle above could stay a
+plain enum with `if/else` branches checking `ticket.status`, or it
+could become a formal State pattern — one class per state
+(`IssuedState`, `PaidState`, `LostState`), each implementing
+`handleExit()` with only the transitions valid from that state. The
+enum version is simpler and is the right default for a problem this
+size; the State pattern earns its keep once the number of statuses and
+status-dependent behaviors grows past what a switch statement stays
+readable at — worth naming as the next step if an interviewer pushes
+on "what if the lifecycle gets more complex."
+
+<QuizItem
+  question="Why does this problem use Strategy for both spot assignment and pricing instead of just one of them?"
+  answer="They're independent axes of change — a lot might switch its pricing model without ever changing how it picks a spot, or vice versa. Bundling both decisions into one 'policy' class would force a change to one to also touch the other, even when they're unrelated."
+/>
+
+## Database design
+
+<!-- concept-dependency: LLD-05 not yet built, explained inline -->
+Translating the class diagram into a schema means each entity with its
+own identity and lifecycle gets a table, association fields become
+foreign keys, and normalization (splitting data so each fact lives in
+exactly one place) keeps `spot.status` from silently disagreeing with
+what the tickets table implies.
+
+<DiagramPanel title="Parking lot schema" type="er" chart={`
+erDiagram
+  PARKING_LOT ||--o{ LEVEL : "has"
+  LEVEL ||--o{ SPOT : "has"
+  SPOT ||--o{ TICKET : "assigned via spot_id"
+  VEHICLE ||--o{ TICKET : "identified via vehicle_id"
+  TICKET ||--o{ PAYMENT : "settled by"
+
+  PARKING_LOT {
+    string id PK
+    string name
+    string address
+  }
+  LEVEL {
+    string id PK
+    string lot_id FK
+    int floor_number
+  }
+  SPOT {
+    string id PK
+    string level_id FK
+    string type
+    string status
+  }
+  VEHICLE {
+    string plate PK
+    string type
+  }
+  TICKET {
+    string id PK
+    string vehicle_id FK
+    string spot_id FK
+    datetime entry_time
+    datetime exit_time
+    string status
+    decimal amount_paid
+  }
+  PAYMENT {
+    string id PK
+    string ticket_id FK
+    string method
+    decimal amount
+    datetime paid_at
+  }
+`} />
+
+**Why `spot.status` is a column, not a derived value.** The tempting
+"simpler" schema skips a status column and derives occupancy by
+checking whether any `ticket` row with that `spot_id` has a null
+`exit_time`. That turns "is anything free on level 3" — the single
+most frequent query in the whole system, run on every entry — into a
+join and a scan instead of an indexed point lookup. Storing
+`spot.status` directly denormalizes deliberately: one extra column to
+keep in sync, in exchange for O(1) reads on the hottest query path.
+
+**Indexes, and what each one protects:**
+
+- `spot(level_id, type, status)` — the hot path. Every entry needs
+  "first `AVAILABLE` spot on this level with type ≥ this vehicle's
+  size," and this composite index turns that into a direct index scan
+  instead of a table scan across up to a couple thousand rows.
+- A unique index on `ticket(vehicle_id) WHERE status = 'ISSUED'` — a
+  partial unique index that makes double-entry for the same plate a
+  constraint violation the database rejects, rather than a bug the
+  application has to catch. If a vehicle already has an active ticket,
+  a second `INSERT` for that plate fails outright.
+- `ticket(spot_id)` — exit needs "the active ticket for this spot" (or
+  entry needs to double check a spot it's about to assign isn't
+  secretly still claimed), and this index makes that lookup direct
+  instead of a scan over the ticket table.
+
+**Concurrency: preventing double-assignment.** Two gates can process
+entries in the same millisecond and both read the same spot as free
+before either writes. The fix isn't application-level locking (a mutex
+in one process doesn't protect a second gate's process) — it's an
+atomic compare-and-set at the database:
+
+```sql
+UPDATE spot
+SET status = 'OCCUPIED'
+WHERE id = :spot_id AND status = 'AVAILABLE';
+```
+
+If this statement's affected-row count is 0, another transaction won
+the race for that spot first, and the assigning code must retry with
+the next candidate spot rather than assume it succeeded. This single
+`WHERE status = 'AVAILABLE'` clause is what makes the concurrency
+non-functional requirement true — the database's row-level locking
+during the update guarantees exactly one of two concurrent gate
+transactions gets `OCCUPIED`.
+
+<QuizItem
+  question="Two gates both call findAvailableSpot() at the same instant and both get back Spot 3-047 as the candidate. Does this cause a double-assignment?"
+  answer="No — the read that finds a candidate spot doesn't reserve it. The actual assignment happens via UPDATE spot SET status='OCCUPIED' WHERE status='AVAILABLE', and only one of the two concurrent UPDATEs can match that WHERE clause. The loser's affected-row count is 0, so it retries against the next candidate instead of double-booking the spot."
+/>
+
+## Trade-offs
+
+**Best-fit vs. nearest-fit spot assignment.** Best-fit (smallest
+compatible spot type for the vehicle) minimizes wasted capacity — a
+motorcycle doesn't occupy a `LARGE` spot a bus needs later — at the
+cost of a slightly pricier query (search the vehicle's exact size class
+first, only widen to larger types if that's empty) and a worse walking
+distance for the driver, who might get sent past a nearer large spot to
+a farther exact-fit one. Nearest-fit (first free spot regardless of
+size-class waste, closest to the entrance) is a single cheap query and
+the best walk time, at the cost of exactly the motorcycle-in-a-bus-spot
+waste described earlier. This lesson's worked example uses best-fit,
+because a garage running near capacity — the scenario an interviewer
+usually probes next — is exactly where wasted large-vehicle capacity
+becomes a real rejected-entry problem, not a hypothetical one.
+
+**Push (Observer) vs. poll for occupancy display.** Push means
+`DisplayBoard` always shows the current count with no staleness and no
+wasted queries when nothing changed, at the cost of coupling — a slow
+or crashed `DisplayBoard.onOccupancyChanged()` handler sitting on
+`ParkingLot`'s call stack could, if called synchronously and left
+unguarded, stall the entry/exit hot path over a subsystem the
+non-functional requirements explicitly say is allowed to be down.
+The practical fix is what Observer implementations typically do in
+practice: notify asynchronously (fire the update on a separate thread
+or queue) and swallow/log a slow-or-failed observer rather than let it
+block the gate transaction. Poll (display re-queries the lot every N
+seconds) trades that coupling problem for guaranteed staleness up to
+the polling interval and load proportional to how many boards are
+polling, not how often the count actually changes. This same trade-off
+resurfaces at network scale on the HLD side, where push becomes a
+whole streaming pipeline instead of one in-process callback.
+
+**Singleton vs. dependency-injected `ParkingLot`.** Covered above under
+patterns — repeated here because it's a trade-off question in its own
+right, not just a pattern-naming exercise: Singleton matches the
+problem's real constraint ("there is exactly one lot") directly in the
+type system, DI matches it by convention and buys back testability.
+
+<QuizItem
+  question="If DisplayBoard.onOccupancyChanged() throws an exception, what should happen to the vehicle currently entering?"
+  answer="Nothing — the entry/exit hot path must not depend on the display subsystem succeeding. The notification should be fired asynchronously and any failure there logged and swallowed, not propagated back to fail the parkVehicle() call that's already committed the spot assignment."
+/>
+
+## Worked example
+
+Trace one full visit through Lot 12, a downtown garage with 6 levels
+and 200 spots per level (1,200 spots total) — squarely in the "hundreds
+to a couple thousand spots" range this problem is scoped for, where a
+facility this size sees roughly one entry or exit every 30-60 seconds
+on average (one published estimate for a 50,000-vehicles/month garage
+works out to about 0.02 transactions/sec) with short bursts at rush
+hour — enough concurrency to need the atomic spot-assignment CAS above,
+nowhere near enough to need horizontal scaling.
+
+<DiagramPanel title="Entry and exit for one vehicle" type="sequence" chart={`
+sequenceDiagram
+  participant Car as Car (KA-01-HH-1234)
+  participant EG as EntryGate-2
+  participant XG as ExitGate-1
+  participant PL as ParkingLot
+  participant LV as Level 3
+  participant SAS as SpotAssignmentStrategy
+  participant SP as Spot 3-047
+  participant DB as DisplayBoard
+
+  Car->>EG: arrives, requests entry
+  EG->>PL: parkVehicle(car)
+  PL->>LV: findAvailableSpot(COMPACT)
+  LV->>SAS: findSpot(level, COMPACT)
+  SAS-->>LV: candidate Spot 3-047
+  LV-->>PL: candidate Spot 3-047
+  PL->>SP: UPDATE status='OCCUPIED' WHERE status='AVAILABLE'
+  SP-->>PL: 1 row affected (won the race)
+  PL->>PL: create Ticket T-1042 (entryTime 14:02)
+  PL->>DB: onOccupancyChanged(level 3, free-1)
+  PL-->>EG: Ticket T-1042
+  EG-->>Car: gate opens, ticket printed
+
+  Note over Car,DB: 2 hours 18 minutes later
+
+  Car->>XG: presents Ticket T-1042
+  XG->>PL: unparkVehicle(T-1042)
+  PL->>PL: validate ticket.status == ISSUED
+  PL->>PL: PricingStrategy.calculateFee(duration=2h18m, COMPACT)
+  Note right of PL: $4 first hour + 2 additional hours (rounded up) x $3 = $10.00
+  PL->>SP: UPDATE status='AVAILABLE' WHERE status='OCCUPIED'
+  PL->>PL: ticket.status = PAID, record Payment $10.00
+  PL->>DB: onOccupancyChanged(level 3, free+1)
+  PL-->>XG: Payment confirmed, $10.00
+  XG-->>Car: gate opens
+`} />
+
+*This trace is the atomic-transition point from the state machine
+section made concrete: the spot flip and the ticket creation happen as
+one committed unit inside `parkVehicle()`, and the same is true of the
+spot release and ticket close inside `unparkVehicle()` — there's no
+window where one has happened and the other hasn't.*
+
+The fee calculation: the Compact tier is $4 for the first hour plus $3
+per additional hour, rounded up. 2 hours 18 minutes is 1 full hour plus
+a partial second hour that rounds up to a full 2 additional hours, so
+$4 + (2 × $3) = $10.00.
+
+## Interview angle
+
+**"How would you support advance reservation, and how does that change
+the Spot state machine and assignment strategy?"** The `RESERVED` state
+already drawn above becomes live: a reservation moves a spot
+`AVAILABLE → RESERVED` with an expiry, `findAvailableSpot()` must skip
+`RESERVED` spots for walk-up traffic, and a new `ReservationService`
+handles the `RESERVED → AVAILABLE` expiry path (a background job or a
+lazy check-on-read) separately from the walk-up `AVAILABLE → OCCUPIED`
+edge that already exists.
+
+**"Two gates process entries at the same instant and both see the same
+spot free — walk through exactly how your code prevents
+double-assignment."** This is the database-design section's
+compare-and-set, narrated: both gates run `findAvailableSpot()` and
+both get `Spot 3-047` back as a candidate, because the read isn't a
+lock. Both then run `UPDATE spot SET status='OCCUPIED' WHERE id =
+'3-047' AND status='AVAILABLE'`. The database serializes the two
+UPDATEs; whichever commits first flips the row, and the second UPDATE's
+`WHERE` clause no longer matches, so it affects 0 rows. The losing
+gate's code checks the affected-row count, sees 0, and retries
+`findAvailableSpot()` for a new candidate instead of assuming success.
+
+**"How would you add per-vehicle-type or time-of-day surge pricing
+without modifying Ticket or Gate?"** Because `PricingStrategy` is an
+interface injected into `ParkingLot` rather than logic embedded in
+`Ticket` or `ExitGate`, a new `SurgePricingStrategy` implementation
+plugs in at construction time. Neither `Ticket` (which just stores
+`amount_paid`) nor `ExitGate` (which just calls
+`pricingStrategy.calculateFee(ticket)`) has to change — the exact
+payoff the Strategy pattern section promised.
+
+## Practice & self-check
+
+### Recap quiz
+
+<QuizItem
+  question="Why is 'parking fee' modeled as a computed value from PricingStrategy rather than its own class?"
+  answer="It has no independent identity or lifecycle of its own — it's a number derived from a ticket's duration and vehicle type. Giving it a class would add a synchronization burden (keeping a Fee object's value consistent with the Ticket it describes) with no corresponding benefit."
+/>
+
+<QuizItem
+  question="A bus needs a spot but every LARGE spot is full while several COMPACT and MOTORCYCLE spots sit empty. What happens under this lesson's compatibility rule?"
+  answer="Entry is rejected — a bus can only use a LARGE spot, and the compatibility rule is one-directional (a vehicle can use its size or larger, never smaller). Empty smaller spots don't help a bus."
+/>
+
+<QuizItem
+  question="Why does ExitGate check ticket.status before processing a payment, instead of just always charging and releasing the spot?"
+  answer="Without that check, a replayed or duplicate exit request on an already-PAID ticket would double-charge the driver and try to release a spot that's already free (or worse, now occupied by someone else). Checking for ISSUED (or LOST) first makes the operation safe to retry."
+/>
+
+<QuizItem
+  question="What specifically breaks if spot.status is removed from the schema and occupancy is instead derived by checking for tickets with a null exit_time?"
+  answer="The hottest query in the system — 'find a free spot on this level' — turns from an indexed point lookup on spot.status into a join/scan against the ticket table on every single entry, which is exactly the low-latency hot path the non-functional requirements call out."
+/>
+
+<QuizItem
+  question="Name the two design decisions in this lesson that both use the Strategy pattern, and why they're kept as two separate strategies instead of one combined 'policy' object."
+  answer="Spot assignment (SpotAssignmentStrategy) and fee calculation (PricingStrategy). They're independent axes of change — a lot can switch its pricing model without touching how it assigns spots, and vice versa — so combining them into one object would force unrelated changes to ripple together."
+/>
+
+<QuizItem
+  question="Two gates race to assign the same spot. One's UPDATE affects 1 row, the other's affects 0. What must the second gate's code do next, and what happens if it doesn't?"
+  answer="It must retry spot assignment against a new candidate spot. If it doesn't check the affected-row count and instead assumes success, it will hand the driver a ticket for a spot that's already occupied by someone else — the double-assignment bug the whole compare-and-set exists to prevent."
+/>
+
+### Open design challenge
+
+Extend the design to support **handicapped spots** and **EV-charging
+spots**: an EV spot enforces a maximum stay duration and charges
+different (typically higher, metered) pricing; a handicapped spot
+requires a valid permit check at entry before assignment. Update the
+class diagram and state machines for the new requirements, identify
+which existing pattern(s) absorb the change versus where a genuinely
+new one is needed, and state plainly where this lesson's design — left
+untouched — would break under these new requirements.
+
+<details>
+<summary>Reference approach (try the challenge yourself first)</summary>
+
+**Where the existing design already bends:** `SpotType` gains two more
+enum values, `HANDICAPPED` and `EV_CHARGING`, each with its own
+compatibility rule (a regular car may use a `HANDICAPPED` or
+`EV_CHARGING` spot in an emergency, but should not be *assigned* one by
+the default strategy — this needs to be an explicit assignment-order
+rule, not just a size-class fallback). `PricingStrategy` already being
+an interface means an `EVChargingPricingStrategy` (metered per kWh or
+per-minute-with-a-cap) drops in with zero change to `Ticket`, `Gate`,
+or `Payment` — the exact payoff Strategy exists for.
+
+**Where a genuinely new mechanism is needed:** the max-stay enforcement
+for EV spots is not a pricing concern, it's a *policy check that can
+force an involuntary state transition* — nothing in the base design
+ever moves a spot out of `OCCUPIED` except a driver-initiated exit.
+That needs a new background job (or a check triggered on each new
+entry attempt) that scans `OCCUPIED` EV spots for
+`now - entryTime > maxStay` and flags an overstay — the design decision
+to make explicit is whether "flagged" changes `Spot.status` (and if so,
+to what — a new `OVERSTAYED` state distinct from plain `OCCUPIED`) or
+stays a side-table for enforcement/billing to consume without touching
+the core state machine. The permit check for handicapped spots is a
+new validation step in `EntryGate.issueTicket()` before assignment is
+even attempted — a new `PermitValidator` collaborator, not a strategy
+swap, because "does this vehicle have a valid permit" isn't
+interchangeable behavior for an existing role, it's a new precondition.
+
+**Where the design breaks if left untouched:** the current
+`SpotAssignmentStrategy.findSpot()` signature only takes a vehicle's
+size class — it has no way to express "and only if permitted" or "and
+only if under N hours," so bolting these requirements on without
+touching the interface means smuggling the logic into `ParkingLot`
+itself as special-cased `if` statements, which is precisely the
+Open/Closed violation the Strategy pattern exists to avoid.
+`Ticket.status` also has no representation for "still parked but past
+its allowed limit" — without a new state, an overstaying EV either
+silently stays `OCCUPIED` forever (no enforcement) or an ad hoc
+boolean flag gets bolted onto `Ticket` instead of extending the actual
+state machine.
+
+</details>
+
+<Rubric items={[
+  "Added HANDICAPPED and EV_CHARGING as SpotType values with an explicit assignment-order rule, not just a compatibility-table update",
+  "Kept fee changes inside PricingStrategy (a new EV-metered strategy) rather than adding vehicle-type conditionals to Ticket or ExitGate",
+  "Identified that max-stay enforcement needs a new mechanism (background job or entry-time check) because nothing in the base design ever forces a spot out of OCCUPIED involuntarily",
+  "Proposed a concrete representation for 'overstayed' (a new state, or an explicit side-table) rather than leaving it unspecified",
+  "Added permit validation as a new precondition/collaborator in EntryGate, not as a branch inside an existing strategy",
+  "Named the Open/Closed violation that occurs if these rules are bolted on as if/else inside ParkingLot instead of through the existing extension points",
+  "Explicitly stated at least one thing that breaks if the base design is left untouched, not just what the extension adds",
+]} />
+
