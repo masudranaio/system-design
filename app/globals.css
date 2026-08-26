@@ -5,12 +5,15 @@
   --color-ground: #f5f7fa;
   --color-surface: #ffffff;
   --color-ink: #14171f;
-  --color-ink-muted: #4b5262;
+  --color-ink-muted: #3a4051;
   --color-brand: #0e7c86;
   --color-line: #d8dee6;
   --color-state-available: #2f9e44;
   --color-state-held: #c97a1a;
   --color-state-booked: #b23a48;
+  --color-accent-warn: #b8722a;
+  --color-accent-info: #5b4fbf;
+  --color-sidebar-surface: #eef1f6;
 
   --background: var(--color-ground);
   --foreground: var(--color-ink);
@@ -45,6 +48,9 @@
     --color-state-available: #4ade80;
     --color-state-held: #f5a623;
     --color-state-booked: #f87171;
+    --color-accent-warn: #e8a659;
+    --color-accent-info: #9c93e0;
+    --color-sidebar-surface: #10131a;
   }
 }
 
@@ -58,6 +64,9 @@
   --color-state-available: #4ade80;
   --color-state-held: #f5a623;
   --color-state-booked: #f87171;
+  --color-accent-warn: #e8a659;
+  --color-accent-info: #9c93e0;
+  --color-sidebar-surface: #10131a;
 }
 
 @theme inline {
@@ -85,6 +94,9 @@
   --color-state-available: var(--color-state-available);
   --color-state-held: var(--color-state-held);
   --color-state-booked: var(--color-state-booked);
+  --color-accent-warn: var(--color-accent-warn);
+  --color-accent-info: var(--color-accent-info);
+  --color-sidebar-surface: var(--color-sidebar-surface);
   --font-mono: var(--font-mono);
   --font-serif: var(--font-serif);
   --radius-sm: calc(var(--radius) - 2px);
@@ -96,6 +108,20 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-serif), Georgia, "Times New Roman", serif;
+  font-size: 1.09375rem;
+  line-height: 1.7;
+}
+
+.panel-breakout {
+  width: 100%;
+}
+
+@media (min-width: 1024px) {
+  .panel-breakout {
+    max-width: 56rem;
+    margin-left: 50%;
+    transform: translateX(-50%);
+  }
 }
 
 h1,
