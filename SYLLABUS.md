@@ -26,7 +26,7 @@ all docs and conversation — use them to reference a specific lesson.
 |---|---|
 | 02 — HLD concepts | 0 / 12 |
 | 03 — LLD concepts | 0 / 12 |
-| 04 — Case studies (priority) | 0 / 8 primary, 0 / 8 secondary |
+| 04 — Case studies (priority) | 3 / 8 primary, 3 / 8 secondary |
 | 05 — Interview prep | 0 / 5 |
 
 ## Rules for building lessons
