@@ -190,147 +190,147 @@ single-station (LLD) and city-wide-network (HLD) level.
 
 ### 1. Problem framing
 
-- [ ] Frame the problem as a single locker station (one
+- [x] Frame the problem as a single locker station (one
       LockerLocation/LockerStation aggregate managing many
       compartments), not the network
-- [ ] Actors: courier (deposit), customer (pickup), ops/staff
+- [x] Actors: courier (deposit), customer (pickup), ops/staff
       (exceptions)
-- [ ] Frame as a resource-allocation-with-a-lease problem — same shape
+- [x] Frame as a resource-allocation-with-a-lease problem — same shape
       as parking-lot/hotel-booking LLD, a good comparison point for
       the interviewer
 
 ### 2. Requirements at the object level
 
-- [ ] Deposit operation: given package size, find available matching
+- [x] Deposit operation: given package size, find available matching
       compartment, mark occupied, generate access token, return code
       or error
-- [ ] Pickup operation: given code, look up token, validate not
+- [x] Pickup operation: given code, look up token, validate not
       expired/used, unlock mapped compartment, free it, invalidate
       token
-- [ ] Staff sweep operation: enumerate compartments with expired
+- [x] Staff sweep operation: enumerate compartments with expired
       tokens, open them
-- [ ] NFRs at the object level: thread-safety per compartment,
+- [x] NFRs at the object level: thread-safety per compartment,
       O(1)-ish code lookup, extensibility for new sizes/strategies
 
 ### 3. Class diagram
 
-- [ ] Mermaid class diagram (`classDiagram`) covering
+- [x] Mermaid class diagram (`classDiagram`) covering
       LockerLocation/LockerStation (aggregate root, holds Compartments
       + accessTokenMapping\<code,AccessToken\> for O(1) lookup)
-- [ ] Compartment (id, size, status/occupied, owns its own occupancy
+- [x] Compartment (id, size, status/occupied, owns its own occupancy
       state — Information Expert pattern)
-- [ ] Package (packageId, size, tracking metadata, lifecycle state)
-- [ ] AccessToken/AccessCode (code, expiration, ref to Compartment,
+- [x] Package (packageId, size, tracking metadata, lifecycle state)
+- [x] AccessToken/AccessCode (code, expiration, ref to Compartment,
       owns its own expiration logic)
-- [ ] Reservation (optional, between Customer/Order and Locker, for
+- [x] Reservation (optional, between Customer/Order and Locker, for
       "reserve before courier arrives")
-- [ ] Customer, Courier/DeliveryAgent (actors)
-- [ ] Order (links Customer + Item/Package list + destination
+- [x] Customer, Courier/DeliveryAgent (actors)
+- [x] Order (links Customer + Item/Package list + destination
       LockerLocation)
-- [ ] LockerService (facade exposing depositPackage()/pickup()/
+- [x] LockerService (facade exposing depositPackage()/pickup()/
       openExpiredCompartments())
-- [ ] Relationships: LockerLocation aggregates many Compartments
+- [x] Relationships: LockerLocation aggregates many Compartments
       (1-to-many), AccessToken references exactly one
       Compartment/Package (1-to-1), Order composes Items, Customer
       associated with Orders
 
 ### 4. State machines
 
-- [ ] Compartment state machine: AVAILABLE -> RESERVED(optional) ->
+- [x] Compartment state machine: AVAILABLE -> RESERVED(optional) ->
       OCCUPIED -> AVAILABLE on pickup, extension
       OUT_OF_SERVICE/MAINTENANCE, HLD variant adds a RETURN_PENDING
       branch
-- [ ] Package state machine: IN_TRANSIT -> DEPOSITED/STORED ->
+- [x] Package state machine: IN_TRANSIT -> DEPOSITED/STORED ->
       PICKED_UP, alternate -> EXPIRED -> RETURNED_TO_SENDER (or manual
       removal)
-- [ ] AccessToken state machine: ACTIVE -> EXPIRED (time-based) or
+- [x] AccessToken state machine: ACTIVE -> EXPIRED (time-based) or
       CONSUMED (on pickup)
-- [ ] Key nuance: expired token stays in the mapping (not deleted) so
+- [x] Key nuance: expired token stays in the mapping (not deleted) so
       the system distinguishes "expired" from "never existed" and
       openExpiredCompartments() can enumerate it
 
 ### 5. Design patterns
 
-- [ ] State (Compartment status as explicit enum
+- [x] State (Compartment status as explicit enum
       AVAILABLE/RESERVED/OCCUPIED/OUT_OF_SERVICE, fits the state
       machine)
-- [ ] Strategy (compartment-assignment: exact-size-only vs fallback vs
+- [x] Strategy (compartment-assignment: exact-size-only vs fallback vs
       best-fit; notification channel selection)
-- [ ] Facade (LockerService coordinator hides lock management and
+- [x] Facade (LockerService coordinator hides lock management and
       multi-step workflows)
-- [ ] Repository (abstracts persistence for Locker/Package/Customer)
-- [ ] Observer (customer notification on state changes — good hook to
+- [x] Repository (abstracts persistence for Locker/Package/Customer)
+- [x] Observer (customer notification on state changes — good hook to
       mention even though full notification impl is out of base
       scope)
-- [ ] Factory/Builder (generateAccessToken() encapsulates token
+- [x] Factory/Builder (generateAccessToken() encapsulates token
       creation + expiration calc)
-- [ ] Two-Phase-Commit-style workflow (reserveCompartment() +
+- [x] Two-Phase-Commit-style workflow (reserveCompartment() +
       confirmDeposit() split, avoids a slot marked occupied with
       nothing in it — worth naming as a technique even though not a
       GoF pattern)
 
 ### 6. Database design
 
-- [ ] Tables: locker_locations(location_id, geo-coords, status),
+- [x] Tables: locker_locations(location_id, geo-coords, status),
       compartments(slot_id, location_id FK, size, status),
       packages(package_id, compartment_id FK, customer_id FK, status,
       timestamps), access_tokens(code, package_id FK, expiration,
       used_at), access_log(actor, action, compartment_id, timestamp)
       for audit/dispute resolution
-- [ ] Indexing: compartments(location_id, size, status) for "find
+- [x] Indexing: compartments(location_id, size, status) for "find
       available compartment of size X"
-- [ ] Indexing: access_tokens.code (or hashed) for O(1) pickup lookup
-- [ ] Indexing: packages(status, expiration) for staff-sweep query
-- [ ] Normalization: Compartment occupancy as single source of truth
+- [x] Indexing: access_tokens.code (or hashed) for O(1) pickup lookup
+- [x] Indexing: packages(status, expiration) for staff-sweep query
+- [x] Normalization: Compartment occupancy as single source of truth
       (Information Expert argument translated to schema)
-- [ ] Retention: keep expired-but-unclaimed rows for a grace period
+- [x] Retention: keep expired-but-unclaimed rows for a grace period
       (don't hard-delete) for staff sweeps/dispute resolution
 
 ### 7. Trade-offs
 
-- [ ] Occupancy tracking on Compartment itself (single source of
+- [x] Occupancy tracking on Compartment itself (single source of
       truth) vs centralized Set\<compartmentId\> in the aggregate
       (simpler queries, drift risk)
-- [ ] Expired-token cleanup timing: keep mapped until staff clears vs
+- [x] Expired-token cleanup timing: keep mapped until staff clears vs
       eager delete — distinction vs simplicity
-- [ ] Compartment lookup: O(n) linear scan, fine at single-station
+- [x] Compartment lookup: O(n) linear scan, fine at single-station
       scale, vs indexed available-queue per size — O(1) but two
       structures to keep in sync
-- [ ] Locking granularity: per-compartment lock, concurrent ops, vs
+- [x] Locking granularity: per-compartment lock, concurrent ops, vs
       one lock for whole aggregate, simpler but serializes
-- [ ] Size-matching strictness: strict exact-match, simple, vs
+- [x] Size-matching strictness: strict exact-match, simple, vs
       fallback to larger compartment, better utilization but
       complicates the "exact compartment class" invariant
 
 ### 8. Worked example
 
-- [ ] Sequence diagram: courier deposits medium package -> system
+- [x] Sequence diagram: courier deposits medium package -> system
       finds available medium compartment, marks OCCUPIED, generates
       6-digit code with 3-day expiration, notifies customer
-- [ ] Continue trace: 2 days later customer mistypes code (rejected,
+- [x] Continue trace: 2 days later customer mistypes code (rejected,
       specific "invalid code" error, no state change)
-- [ ] Continue trace: retries with correct code (compartment unlocks,
+- [x] Continue trace: retries with correct code (compartment unlocks,
       Package->PICKED_UP, AccessToken consumed,
       Compartment->AVAILABLE)
-- [ ] Contrast branch: customer never shows, day 3 token flips
+- [x] Contrast branch: customer never shows, day 3 token flips
       EXPIRED (stays mapped), staff sweep via
       openExpiredCompartments() unlocks it, compartment reset to
       AVAILABLE
-- [ ] Exercises deposit, pickup, expiry, staff-override in one flow
+- [x] Exercises deposit, pickup, expiry, staff-override in one flow
 
 ### 9. Interview angle
 
-- [ ] Follow-up: "What happens if two couriers try to deposit into the
+- [x] Follow-up: "What happens if two couriers try to deposit into the
       same compartment at the same instant?" (concurrency/locking)
-- [ ] Follow-up: "How would you support package sizes that don't fit
+- [x] Follow-up: "How would you support package sizes that don't fit
       any single compartment, or multiple packages in one order?"
       (Strategy extensibility)
-- [ ] Follow-up: "The customer lost their code — what do you do?"
+- [x] Follow-up: "The customer lost their code — what do you do?"
       (reissuable AccessToken vs deleted mapping)
 
 ### 10. Practice & Self-Check
 
-- [ ] Open challenge: "Extend the design to support package returns:
+- [x] Open challenge: "Extend the design to support package returns:
       customer drops off a return item via a separate drop-off flow,
       compartment enters RETURN_PENDING (distinct from normal
       delivery occupancy so ops can tell delivery-dwell from
@@ -342,5 +342,51 @@ single-station (LLD) and city-wide-network (HLD) level.
 
 ## Completeness Pass Log
 
-Not yet run — fill in when `hld.mdx`/`lld.mdx` are built, per
-CLAUDE.md's "After writing a lesson" rule.
+**`lld.mdx` — built 2026-08-26.** Every item in the "LLD Checklist
+(`lld.mdx`) — primary side" section above is ticked and covered
+directly in the finished lesson:
+
+- Problem framing, object-level requirements, and NFRs: covered in the
+  "Problem framing" and "Requirements at the object level" sections.
+- Class diagram: one `classDiagram` covers all nine required
+  elements/relationships (LockerLocation aggregate root with a
+  `tokensByCode` map, Compartment, Package, AccessToken, Reservation,
+  Customer, DeliveryAgent, Order, LockerService), with the
+  Information-Expert and composition-vs-association reasoning called
+  out in prose since LLD-01/LLD-02 aren't built yet (marked with
+  `concept-dependency` comments in the MDX).
+- State machines: three `stateDiagram-v2` diagrams (Compartment,
+  Package, AccessToken), each showing every back-edge, plus the
+  expired-token-stays-mapped nuance called out explicitly in both prose
+  and an inline quiz. The Compartment diagram intentionally omits the
+  RETURN_PENDING branch — per the checklist wording, that branch is the
+  HLD variant, not part of this LLD's base design; RETURN_PENDING is
+  introduced instead in the closing open design challenge, which is
+  where the checklist's own returns extension lives.
+- Design patterns: all seven items (State, Strategy, Facade,
+  Repository, Observer, Factory, and the two-phase-commit-style
+  reserve/confirm split) covered as a dedicated subsection, each tied
+  to a specific method/field in this design rather than described
+  abstractly.
+- Database design: all five tables, all three required indexes,
+  normalization, and retention policy covered, with an `erDiagram` plus
+  prose explaining the indexing rationale per query.
+- Trade-offs: all five pairs covered, each naming both the chosen
+  option and the explicit alternative.
+- Worked example: two sequence diagrams (deposit/wrong-code/pickup, and
+  expiry/staff-sweep) trace every checklist beat — deposit, mistyped
+  code with no state change, correct pickup, and the day-3 expiry +
+  staff sweep — connected by prose rather than crammed into one
+  diagram, per CONTENT-GUIDE's "one diagram, one concern" rule.
+- Interview angle: all three follow-ups answered with a concrete
+  mechanism, not just named.
+- Practice & Self-Check: 8 recap `QuizItem`s (plus 4 inline ones after
+  major concepts, 12 total) mixing recall/why/scenario questions per
+  CONTENT-GUIDE, the exact returns-extension open challenge from the
+  checklist with a collapsible reference answer, and a 6-item `Rubric`
+  (auto-computing the Novice/Practicing/Interview-ready self-score
+  band).
+
+Nothing from the LLD checklist section was dropped. The "Problem Scope"
+and "HLD Checklist" sections above are unaffected — HLD (`hld.mdx`) is
+still not built, per `SYLLABUS.md`'s CS-06 status.
