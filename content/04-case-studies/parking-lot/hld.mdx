@@ -29,12 +29,12 @@ control, and has to travel to a search index that thousands of app users
 query per second, without either going stale for too long or falling
 over under read load.
 
-Put another way: the LLD side is an object-modeling problem (get the
-class design and state transitions right). The HLD side is a
-data-pipeline problem (get an event from a gate in Tacoma into a search
-result in a stranger's phone, fast and cheap, at the scale of a whole
-metro network) — the object model barely changes, the infrastructure
-around it does.
+- LLD side: an **object-modeling** problem — get the class design and
+  state transitions right, inside one building.
+- HLD side: a **data-pipeline** problem — get an event from a gate in
+  Tacoma into a search result in a stranger's phone, fast and cheap, at
+  the scale of a whole metro network. The object model barely changes;
+  the infrastructure around it does.
 
 <QuizItem
   question="A single facility's ParkingLot object already prevents double-assignment with an atomic spot update. Why isn't that enough to build the network-wide product?"
@@ -63,17 +63,22 @@ around it does.
   traffic (worked out below).
 - Sub-second read latency for search, even at thousands of lots per
   query radius.
-- Consistency is **relaxed** compared to the LLD side: a search result
-  that's a few seconds stale is an acceptable, expected trade-off — no
-  driver is harmed by seeing "12 spots" when there are actually 11.
-  Double-booking a paid reservation is not acceptable at any staleness.
-  {/* concept-dependency: HLD-01 not yet built, explained inline */}
-  This split — strong consistency (every read reflects the latest
-  committed write, immediately) for money-bearing state vs. eventual
-  consistency (reads may lag writes by a bounded delay but always
-  converge) for display state — is a core distributed-systems trade-off:
-  you pay for strong consistency in latency and availability, so you
-  only spend it where correctness actually requires it.
+- Consistency is **relaxed** compared to the LLD side, and deliberately
+  split by data type:
+  - **Strong consistency** (every read reflects the latest committed
+    write, immediately) for money-bearing state — reservations.
+  - **Eventual consistency** (reads may lag writes by a bounded delay
+    but always converge) for display state — live occupancy. A search
+    result that's a few seconds stale is an acceptable, expected
+    trade-off: no driver is harmed by seeing "12 spots" when there are
+    actually 11.
+  - You pay for strong consistency in latency and availability, so you
+    only spend it where correctness actually requires it.
+
+<QuizItem
+  question="Why does live occupancy use eventual consistency instead of the same strong consistency as reservations?"
+  answer="Occupancy is display state — a few seconds of staleness costs nothing, and paying strong consistency's latency/coordination cost on every search read (the ~99% majority of traffic) would be wasted spend where correctness doesn't require it."
+/>
 
 **Back-of-envelope math.** Say the network covers 12,000 partner
 facilities averaging 140 spots each — just under 1.7 million spots under
@@ -84,138 +89,233 @@ typical day (arrive, leave, repeat), and each turnover is two events
 (entry + exit): 1.7M spots × 3 turnovers × 2 events ≈ 10.2M events/day.
 Traffic isn't uniform — say 40% of that lands inside a concentrated
 3-hour peak window (morning commute plus evening return): 4.1M events ÷
-10,800 seconds ≈ **~380 state-change events/sec at peak**. But most
-IoT-instrumented lots also emit a periodic liveness heartbeat regardless
-of whether anything changed — a common pattern so the ingestion layer
-can tell "no cars moved" apart from "the sensor died." At one heartbeat
-per spot every 30 seconds, that's 1.7M ÷ 30 ≈ **~56,000 messages/sec**
-of raw ingestion volume, dwarfing the ~380/sec of events that actually
-change an answer. This is the source of the "tens of thousands of
-events/sec" scale figure: it's mostly liveness noise, not signal, and
-the architecture has to filter that out before it reaches anything that
-matters.
+10,800 seconds ≈ ~380 state-change events/sec at peak.
+
+<KeyStat
+  value="~380 events/sec"
+  label="Real state-change events at peak (entry/exit only)"
+  detail="1.7M spots × 3 turnovers/day × 2 events (entry+exit) = 10.2M events/day. 40% lands in a concentrated 3-hour peak window: 4.1M events ÷ 10,800 seconds ≈ 380/sec."
+/>
+
+Most IoT-instrumented lots also emit a periodic liveness heartbeat
+regardless of whether anything changed — a common pattern so the
+ingestion layer can tell "no cars moved" apart from "the sensor died."
+
+<KeyStat
+  value="~56,000 msgs/sec"
+  label="Raw ingestion volume once liveness heartbeats are counted"
+  detail="At one heartbeat per spot every 30 seconds: 1.7M spots ÷ 30 ≈ 56,000 messages/sec — dwarfing the ~380/sec of events that actually change an answer. This is the source of the 'tens of thousands of events/sec' scale figure: it's mostly liveness noise, not signal, and the architecture has to filter that out before it reaches anything that matters."
+/>
 
 *Read side (search).* At a network-wide peak of ~4,000 concurrent search
 requests/sec, each returning ~40 candidate lots, the serving layer does
-4,000 × 40 = **~160,000 availability lookups/sec**. Compared to the
-~380/sec of events that actually change an answer, reads outnumber
-meaningful writes by roughly **400:1** — the single strongest argument
-for a dedicated read-optimized serving layer instead of querying
-whatever holds the raw event stream.
+4,000 × 40 = ~160,000 availability lookups/sec.
+
+<KeyStat
+  value="~160,000 reads/sec"
+  label="Search-path availability lookups at peak — a ~400:1 read:write ratio"
+  detail="4,000 concurrent search requests/sec × ~40 candidate lots each = 160,000 lookups/sec, against ~380/sec of events that actually change an answer. That skew is the single strongest argument for a dedicated read-optimized serving layer instead of querying whatever holds the raw event stream."
+/>
 
 <QuizItem
   question="If real occupancy changes only happen ~380 times/sec at peak, why does the ingestion layer need to handle ~56,000 messages/sec?"
   answer="Most of that volume is IoT liveness heartbeats, not state changes — the ingestion layer has to absorb and filter that noise before a lightweight signal (spot occupied/vacated) reaches the serving layer, so its throughput target is set by raw message volume, not by how often the answer actually changes."
 />
 
-## Architecture: from a gate event to a search result
+## Architecture: ingestion pipeline
 
-<DiagramPanel
-  title="Network availability architecture — edge to search"
+An event's first job is getting from an unreliable edge device into a
+durable, replayable log — before anything tries to make sense of it.
+
+<D2Diagram
+  title="Edge to serving cache — the ingestion pipeline"
   type="architecture"
-  chart={`flowchart LR
-    subgraph Edge["Edge layer"]
-      Sensor["Company-owned lot:\ngate/IoT sensor"]
-      Partner["Partner lot:\nPARCS pushes via API"]
-    end
+  chart={`direction: right
+sensor: Company lot:\ngate/IoT sensor {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+partner: Partner lot:\nPARCS API {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+gateway: Ingestion\ngateway {
+  style.fill: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+log: Event log\n(durable, per-lot order) {
+  style.fill: "#4b5262"
+  style.font-color: "#ffffff"
+}
+processors: Stream\nprocessors {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+cache: Serving cache\n(spots available/lot) {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+db: Occupancy DB\n(system of record) {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
 
-    Sensor -->|"state-change + heartbeat,\nbuffered offline"| GW["Ingestion gateway"]
-    Partner -->|"entry/exit event"| GW
-
-    GW -->|append, partitioned by lot_id| Log[("Event log\n(durable, per-lot ordered)")]
-    Log --> SP["Stream processors\n(per-lot aggregate)"]
-    SP -->|upsert current count| Cache[("Serving cache\nspots-available per lot")]
-    SP -->|periodic reconcile| DB[("Occupancy DB\nsystem of record")]
-
-    GeoIdx[("Geospatial index\ngeohash cell -> lot_ids")]
-
-    Client["Mobile app"] -->|"lat/long + radius"| API["API / gateway layer\n(stateless, load-balanced)"]
-    API -->|candidate lookup| GeoIdx
-    GeoIdx -->|candidate lot_ids| API
-    API -->|batch read| Cache
-    Cache -->|ranked results| API
-    API --> Client
-
-    Client -->|reserve spot| Res["Reservation service\n(strong consistency)"]
-    Res <-->|cross-check availability| Cache
-    Res --> ResDB[("Reservation DB")]
+sensor -> gateway: "state-change +\nheartbeat, buffered offline"
+partner -> gateway: "entry/exit event"
+gateway -> log: "append,\npartitioned by lot_id"
+log -> processors: consume
+processors -> cache: "upsert\ncurrent count"
+processors -> db: "periodic\nreconcile"
 `}
 />
 
-Six layers, each doing one job:
-
-1. **Edge layer.** Wherever a spot's state actually changes — a gate
-   arm, an IoT sensor, or a partner's PARCS system. Not something this
-   operator controls or trusts to be always connected.
-2. **Ingestion gateway.** The single front door for all edge traffic:
-   authenticates the source, buffers events locally if the network is
-   down, and replays them on reconnect instead of dropping them.
-3. **Event log (durable, partitioned by `lot_id`).** A Kafka-style
-   append-only log is the system of record for "what happened, in what
-   order, per lot." Nothing downstream is trusted to be the source of
-   truth — if a cache entry or a projection is wrong, it can always be
-   rebuilt by replaying this log.
-4. **Stream processors.** Consume the log and maintain a current-state
-   projection — "Lot #4821 has 37 of 140 spots free right now" — instead
-   of every reader having to replay history itself.
-5. **Serving cache + geospatial index.** What search actually reads:
-   sub-100ms lookups, decoupled entirely from the write-side event
-   volume.
-6. **API/gateway layer.** Stateless, horizontally scaled services
-   fronting three distinct capabilities behind one edge: search,
-   reservation, and partner ingestion.
-   {/* concept-dependency: HLD-03 not yet built, explained inline */}
-   "Stateless" here means no service instance holds session or
-   per-request state in memory between calls — any instance behind the
-   load balancer can serve any request, so the fleet scales horizontally
-   just by adding instances, with no sticky-session bookkeeping.
-
-The **reservation service is drawn as a separate box on purpose.** It
-reads the same live-occupancy picture everyone else does, but writes
-against its own strongly-consistent store — it is not just another
-consumer of the eventually-consistent occupancy stream. More on why in
-Trade-offs below.
+- **Edge layer.** Wherever a spot's state actually changes — a gate arm,
+  an IoT sensor, or a partner's PARCS system. Not something this
+  operator controls or trusts to be always connected.
+- **Ingestion gateway.** The single front door for all edge traffic:
+  authenticates the source, buffers events locally if the network is
+  down, and replays them on reconnect instead of dropping them.
+- **Event log (durable, partitioned by `lot_id`).** A Kafka-style
+  append-only log is the system of record for "what happened, in what
+  order, per lot." Nothing downstream is trusted to be the source of
+  truth — if a cache entry or a projection is wrong, it can always be
+  rebuilt by replaying this log.
+- **Stream processors.** Consume the log and maintain a current-state
+  projection — "Lot #4821 has 37 of 140 spots free right now" — instead
+  of every reader having to replay history itself.
+- **Serving cache.** What search actually reads: sub-100ms lookups,
+  decoupled entirely from the write-side event volume.
 
 <QuizItem
   question="Why does the event log sit between the ingestion gateway and the stream processors, instead of the gateway writing straight into the serving cache?"
   answer="The log is the durable, replayable system of record — if the cache is wrong, corrupted, or a processor crashes mid-update, it can be rebuilt by replaying the log; writing straight to the cache would make an in-memory store the only copy of history, with no recovery path."
 />
 
+## Architecture: search and reservation layer
+
+Everything above exists to feed one number — spots available per lot —
+into a layer that thousands of app users query concurrently.
+
+<D2Diagram
+  title="Search and reservation layer"
+  type="architecture"
+  chart={`direction: right
+client: Mobile app {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+api: API/gateway layer\n(stateless, load-balanced) {
+  style.fill: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+geo: Geospatial index\n(geohash cell -> lot_ids) {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+cache: Serving cache\n(spots available/lot) {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+res: Reservation service\n(strong consistency) {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+resdb: Reservation DB {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+
+client -> api: "lat/long + radius"
+api -> geo: candidate lookup
+geo -> api: candidate lot_ids
+api -> cache: "batch read\n(MGET)"
+cache -> api: ranked results
+api -> client: response
+
+client -> res: reserve spot
+res -> cache: cross-check availability
+res -> resdb: commit reservation
+`}
+/>
+
+- **API/gateway layer.** Stateless, horizontally scaled services
+  fronting three distinct capabilities behind one edge: search,
+  reservation, and partner ingestion. "Stateless" here means no service
+  instance holds session or per-request state in memory between calls —
+  any instance behind the load balancer can serve any request, so the
+  fleet scales horizontally just by adding instances, with no
+  sticky-session bookkeeping.
+- **Geospatial index.** Answers "which lots are nearby" only — it never
+  holds availability data itself (more in the search fan-out deep dive
+  below).
+- **Reservation service — drawn as a separate box on purpose.** It reads
+  the same live-occupancy picture everyone else does, but writes against
+  its own strongly-consistent store — it is not just another consumer of
+  the eventually-consistent occupancy stream. More on why in Trade-offs
+  below.
+
+<QuizItem
+  question="Why is the reservation service drawn as its own box with its own database, instead of just another reader of the serving cache?"
+  answer="It writes money-bearing commitments and needs strong consistency; folding it into the cache's eventually-consistent pipeline would let two drivers both see a spot as reservable and have their writes both appear to succeed before either propagates, double-booking a paid spot."
+/>
+
 ## Deep dive: partitioning the data
 
-{/* concept-dependency: HLD-07 not yet built, explained inline */}
 Partitioning (also called sharding) means splitting one logical dataset
 across many physical nodes by some key, so no single node has to hold or
-serve the whole thing. Here the partition key is `lot_id` (or a
-region derived from it): Seattle's event volume and Miami's event volume
-land on different partitions and never contend for the same disk or the
-same lock.
+serve the whole thing.
 
-That key is a deliberate choice: it also happens to be the natural
-consumer-parallelism boundary for the stream processors (one lot's
-events must be processed in order relative to each other, but two
-different lots' events never need to be ordered relative to one
-another), so partitioning by `lot_id` gets you both storage scaling and
-processing parallelism from a single decision.
+<Point icon="branch">
+  <strong>Partition key: `lot_id` (or a region derived from it).</strong>{" "}
+  Seattle's event volume and Miami's event volume land on different
+  partitions and never contend for the same disk or the same lock.
+</Point>
+<Point icon="layers">
+  <strong>Same key doubles as the processing-parallelism boundary.</strong>{" "}
+  One lot's events must be processed in order relative to each other, but
+  two different lots' events never need to be ordered relative to one
+  another — so partitioning by `lot_id` gets you storage scaling and
+  stream-processor parallelism from a single decision.
+</Point>
+<Point icon="database">
+  <strong>Write side and read side get different storage strategies
+  entirely</strong>, because they're different shapes of data.
+</Point>
 
-The write side and the read side don't just get different partitions —
-they get **different storage strategies entirely**, because they're
-different shapes of data:
-
-- The event log is high-write, append-only, and rarely read directly —
-  optimized for sequential writes and bounded retention (raw telemetry
-  is commonly kept 7–30 days, then dropped — nobody queries "what was
-  the state of spot 3-047 six months ago").
-- The serving cache is low-write, extremely high-read, and only ever
-  holds the *current* aggregate — optimized for point lookups, not
-  history.
+<CompareTable
+  title="Event log vs. serving cache — different data shapes, different stores"
+  rows={[
+    {
+      approach: "Event log",
+      pros: [
+        "Optimized for sequential, append-only writes",
+        "Bounded retention is fine — raw telemetry is commonly kept 7-30 days, then dropped",
+      ],
+      cons: [
+        "Rarely read directly",
+        "Not optimized for point lookups",
+      ],
+      chosenBecause: "high-write, history-shaped data",
+    },
+    {
+      approach: "Serving cache",
+      pros: [
+        "Optimized for point lookups on the hot read path",
+        "Only ever holds the current aggregate, not history",
+      ],
+      cons: [
+        "Low-write by design — updated only by the stream processor",
+      ],
+      chosenBecause: "low-write, extremely high-read, current-value-only data",
+    },
+  ]}
+/>
 
 Trying to serve both needs from one store — say, querying the raw event
 log directly for every search request — would mean scanning or
 aggregating history on the hot path for every one of the ~160,000
-reads/sec worked out above. That's the paragraph 3 architecture diagram
-in one sentence: the cache exists specifically so the read path never
-has to touch the write path's storage.
+reads/sec worked out above. The cache exists specifically so the read
+path never has to touch the write path's storage.
 
 <QuizItem
   question="Why partition the event log by lot_id instead of, say, by time (all of Tuesday's events in one partition)?"
@@ -229,65 +329,133 @@ from a database. At ~160,000 reads/sec that database falls over — and
 most of those reads are for lots whose count hasn't changed since the
 last read.
 
-{/* concept-dependency: HLD-06 not yet built, explained inline */}
-The fix is a **push-based update, cache-aside-adjacent pattern**: instead
-of every reader pulling from the database (polling), the stream
-processor pushes an updated count into the cache the moment an event
-changes it, and every reader just reads the cache. This is a direct
-network-scale extension of the LLD's `DisplayBoard` — that Observer
-pushed occupancy deltas to one physical sign in one building; here, the
-same push-not-poll idea updates a shared cache entry that thousands of
-app instances read concurrently. Compacting the stream processor's
-output into a "latest state per spot" log (a Kafka *compacted topic*,
-which keeps only the newest record per key instead of the full history)
-gives the cache a cheap, replayable source to rebuild from if it's ever
-flushed — you don't lose "current state" just because you lost the
-cache.
+<D2Diagram
+  title="Push-based freshness: rebuild path, not just the update path"
+  type="architecture"
+  chart={`direction: right
+sp: Stream\nprocessor {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+topic: Compacted topic\n(latest state per spot) {
+  style.fill: "#4b5262"
+  style.font-color: "#ffffff"
+}
+cache: Serving cache {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
 
-The cache is a read-optimized *projection*, never the source of truth —
-if it disappears, the stream processors can rebuild it entirely by
-replaying the compacted topic, and the raw event log behind that is the
-final backstop if the compacted topic itself needs rebuilding.
+sp -> topic: "compact: keep only\nnewest record per lot"
+sp -> cache: "push update\non every change"
+topic -> cache: "rebuild from here\nif cache is lost"
+`}
+/>
+
+- **Push, not poll.** Instead of every reader pulling from the database,
+  the stream processor pushes an updated count into the cache the moment
+  an event changes it, and every reader just reads the cache. This is a
+  direct network-scale extension of the LLD's `DisplayBoard` — that
+  Observer pushed occupancy deltas to one physical sign in one building;
+  here, the same push-not-poll idea updates a shared cache entry that
+  thousands of app instances read concurrently.
+- **Compacted topic for rebuildability.** Compacting the stream
+  processor's output into a "latest state per spot" log (a Kafka
+  *compacted topic*, which keeps only the newest record per key instead
+  of the full history) gives the cache a cheap, replayable source to
+  rebuild from if it's ever flushed — you don't lose "current state"
+  just because you lost the cache. The cache is a read-optimized
+  *projection*, never the source of truth; if it disappears, stream
+  processors rebuild it by replaying the compacted topic, and the raw
+  event log is the final backstop if the compacted topic itself needs
+  rebuilding.
+- **Cache stampede on rebuild.** If the cache is flushed or restarted
+  while ~160,000 reads/sec are still arriving, a naive rebuild lets every
+  one of those reads race straight to the database or the raw event log
+  looking for a value that isn't in the cache yet — a self-inflicted
+  overload at exactly the moment the system is already recovering. The
+  fix is to never let readers hit anything but the cache: rebuild happens
+  out-of-band by replaying the compacted topic into the cache before it's
+  marked healthy, and any request that arrives mid-rebuild gets served a
+  short-lived "stale but present" value (or, for a lot not yet
+  rebuilt, briefly waits behind a single in-flight rebuild request rather
+  than each triggering its own) instead of falling through to the
+  database.
 
 <QuizItem
   question="What does 'the cache is a projection, not the source of truth' actually protect you from?"
-  answer="It means the cache can be wiped, restarted, or lost without losing any real data — a stream processor rebuilds it by replaying the durable event log, so a cache failure is an availability blip, not a data-loss incident."
+  answer="It means the cache can be wiped, restarted, or lost without losing any real data — a stream processor rebuilds it by replaying the durable event log (or the compacted topic), so a cache failure is an availability blip, not a data-loss incident."
+/>
+
+<QuizItem
+  question="Why does rebuilding the cache from a compacted topic avoid the cache-stampede problem, instead of just refilling the cache slower?"
+  answer="It keeps the flood of ~160,000 reads/sec pointed only at the cache (served stale or briefly queued) instead of letting every one of those reads fall through to the database looking for a missing key — the database never sees stampede-scale traffic in the first place."
 />
 
 ## Deep dive: handling flaky edge connectivity
 
 Gate hardware and partner integrations live in the real world: a lot's
 internet connection drops for ten minutes during a storm, or a PARCS
-integration has a stale queue. Two mechanisms handle this together:
+integration has a stale queue.
 
-1. **Gateway-side buffering and replay.** The ingestion gateway (or a
-   small agent at the edge) queues events locally when it can't reach
-   the network and replays them, in order, on reconnect. Each event
-   carries a unique id so the stream processor can drop duplicates if
-   the same event gets replayed twice — this is what makes replay safe:
-   {/* concept-dependency: HLD-05 not yet built, explained inline */}
-   an **at-least-once** delivery guarantee (an event might arrive more
-   than once, but never zero times) paired with **idempotent**
-   processing (applying the same event twice has the same effect as
-   applying it once) together behave like exactly-once processing,
-   without needing a much more expensive exactly-once delivery protocol
-   end to end.
-2. **Periodic reconciliation.** Buffering handles a *known* outage —
-   but a sensor can also silently miss one event (a car leaves and the
-   "exit" event never gets generated at all) with no outage to signal
-   it. A background job periodically compares each lot's cached
-   available-count against ground truth — the durable event log, or for
-   partner lots, a periodic full-state pull from their PARCS API — and
-   corrects drift. This is the safety net for the failure mode that
-   buffering can't see coming.
+<D2Diagram
+  title="Two independent safety nets for edge unreliability"
+  type="architecture"
+  chart={`direction: right
+gate: Lot gate /\nPARCS integration {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+gateway: Ingestion gateway\n(local buffer) {
+  style.fill: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+log: Event log {
+  style.fill: "#4b5262"
+  style.font-color: "#ffffff"
+}
+recon: Reconciliation\njob (scheduled) {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+cache: Serving cache {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
 
-{/* concept-dependency: HLD-10 not yet built, explained inline */}
-Both mechanisms exist because distributed systems can't assume a
-network link stays up or a message arrives exactly once — a lot going
-fully offline is a network partition from the operator's point of view,
-and the system has to keep serving a (frozen, clearly stale) last-known
-count rather than treating "can't reach lot #4821" as "lot #4821 has
-zero spots."
+gate -> gateway: "event (id=UUID)"
+gateway -> log: "replay in order\non reconnect"
+recon -> log: "compare against\nground truth"
+recon -> cache: "correct drift"
+`}
+/>
+
+- **Gateway-side buffering and replay** handles a *known* outage. The
+  ingestion gateway (or a small agent at the edge) queues events locally
+  when it can't reach the network and replays them, in order, on
+  reconnect.
+- **Idempotent processing** is what makes that replay safe. Each event
+  carries a unique id so the stream processor can drop duplicates if the
+  same event gets replayed twice: **at-least-once** delivery (an event
+  might arrive more than once, but never zero times) paired with
+  **idempotent** processing (applying the same event twice has the same
+  effect as applying it once) together behave like exactly-once
+  processing, without needing a much more expensive exactly-once
+  delivery protocol end to end.
+- **Periodic reconciliation** is the safety net for the failure mode
+  buffering can't see coming — a sensor that silently misses one event (a
+  car leaves and the "exit" event never gets generated at all), with no
+  outage to signal it. A background job periodically compares each lot's
+  cached available-count against ground truth — the durable event log, or
+  for partner lots, a periodic full-state pull from their PARCS API — and
+  corrects drift.
+
+Both mechanisms exist because distributed systems can't assume a network
+link stays up or a message arrives exactly once — a lot going fully
+offline is a network partition from the operator's point of view, and the
+system has to keep serving a (frozen, clearly stale) last-known count
+rather than treating "can't reach lot #4821" as "lot #4821 has zero
+spots."
 
 <QuizItem
   question="A lot's sensor drops the 'car exited' event for one spot, with no network outage involved — which of the two mechanisms catches this, and why not the other?"
@@ -296,34 +464,71 @@ zero spots."
 
 ## Deep dive: fanning out a geospatial search
 
-{/* concept-dependency: HLD-11 not yet built, explained inline */}
 "Find lots within 2 miles of this point" doesn't run efficiently against
 a plain `(lat, lng)` column — nothing indexes two dimensions at once for
-range queries. A **geohash** solves this by interleaving a location's
-latitude and longitude bits into one string (`c23nb...`), such that
-locations sharing a longer prefix are close together in space. That
-collapses a 2D proximity query into a 1D prefix lookup, which ordinary
-indexes (or even a Redis sorted set) handle well.
+range queries.
 
-Geohash has one sharp edge: two points a few feet apart can land on
-opposite sides of a cell boundary and share no prefix at all. The fix is
-mechanical, not architectural — always query the target cell **and its
-8 neighbors**, then filter the combined candidate set by actual
-distance. (A quad-tree, which recursively subdivides space and adapts
-its depth to density, is the usual alternative — better for a wildly
-uneven lot distribution like dense downtown blocks next to sparse
-suburbs, at the cost of maintaining an in-memory tree instead of a flat
-index. Geohash is the simpler fit here because lot locations are
-static and change slowly.)
+<D2Diagram
+  title="Geospatial candidate lookup, then one batch read"
+  type="architecture"
+  chart={`direction: right
+query: Search:\nlat/lng + radius {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+geo: Geohash lookup:\ntarget cell + 8 neighbors {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+filter: Filter candidates\nby real distance {
+  style.fill: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+cache: Serving cache:\nMGET, one round trip {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
 
-The search flow, concretely: geohash-prefix lookup returns a set of
-candidate `lot_id`s (the earlier back-of-envelope used ~40) — then the
-API layer does **one batch read** (`MGET`-style) against the serving
-cache for all 40 at once, not 40 separate round trips, and definitely
-not 40 separate joins against the live event stream. The geospatial
-index only ever answers "which lots are nearby" — it never holds
-availability data itself, which is what keeps it simple and rarely
-invalidated (lot locations don't move; lot occupancy does, constantly).
+query -> geo
+geo -> filter: "~40 candidate\nlot_ids"
+filter -> cache: batch read
+`}
+/>
+
+<Point icon="branch">
+  <strong>Geohash-prefix lookup.</strong> A <strong>geohash</strong>{" "}
+  interleaves a location's latitude and longitude bits into one string
+  (`c23nb...`), such that locations sharing a longer prefix are close
+  together in space. That collapses a 2D proximity query into a 1D prefix
+  lookup, which ordinary indexes (or even a Redis sorted set) handle well.
+</Point>
+<Point icon="shield">
+  <strong>Neighbor-cell fix for the boundary edge case.</strong> Geohash
+  has one sharp edge: two points a few feet apart can land on opposite
+  sides of a cell boundary and share no prefix at all. The fix is
+  mechanical, not architectural — always query the target cell{" "}
+  <strong>and its 8 neighbors</strong>, then filter the combined candidate
+  set by actual distance.
+</Point>
+<Point icon="branch">
+  <strong>Quad-tree as the alternative.</strong> A quad-tree recursively
+  subdivides space and adapts its depth to density — better for a wildly
+  uneven lot distribution like dense downtown blocks next to sparse
+  suburbs, at the cost of maintaining an in-memory tree instead of a flat
+  index. Geohash is the simpler fit here because lot locations are static
+  and change slowly.
+</Point>
+<Point icon="cache">
+  <strong>One batch read, not N.</strong> The API layer does one batch
+  read (`MGET`-style) against the serving cache for all ~40 candidates at
+  once — not 40 separate round trips, and definitely not 40 separate
+  joins against the live event stream.
+</Point>
+
+The geospatial index only ever answers "which lots are nearby" — it
+never holds availability data itself, which is what keeps it simple and
+rarely invalidated (lot locations don't move; lot occupancy does,
+constantly).
 
 <QuizItem
   question="Why does the geospatial index only store lot locations, never live availability counts?"
@@ -332,39 +537,83 @@ invalidated (lot locations don't move; lot occupancy does, constantly).
 
 ## Trade-offs
 
-**Strong consistency (reservations) vs. eventual consistency (live
-occupancy) — chosen to split, not unify.** Running both through the same
-eventually-consistent pipeline would let two drivers "confirm" the same
-reserved spot before either write propagates — unacceptable when money
-changes hands. Running both through the reservation service's strongly
-consistent path would mean every search-page load pays that path's
-latency and coordination cost, for the ~99% of reads that only display a
-count. Splitting them means the read-heavy majority stays cheap and the
-money-bearing minority stays correct — the two paths have different
-failure costs, so they earn different consistency budgets.
+<CompareTable
+  title="Consistency model: reservations vs. live occupancy"
+  rows={[
+    {
+      approach: "One eventually-consistent pipeline for both",
+      pros: ["Simplest to build — one pipeline, one mental model"],
+      cons: [
+        "Two drivers can both see a spot as reservable and have their writes both appear to succeed before either propagates — double-books a paid reservation",
+      ],
+    },
+    {
+      approach: "One strongly-consistent path for both",
+      pros: ["No double-booking risk anywhere"],
+      cons: [
+        "Every search-page load pays the strong-consistency path's latency and coordination cost, for the ~99% of reads that only display a count",
+      ],
+    },
+    {
+      approach: "Split: strong for reservations, eventual for occupancy",
+      pros: [
+        "Read-heavy display majority stays cheap",
+        "Money-bearing writes stay correct",
+      ],
+      cons: ["Operating two consistency models instead of one"],
+      chosenBecause:
+        "the two paths have different failure costs, so they earn different consistency budgets",
+    },
+  ]}
+/>
 
-**Streaming projection + cache vs. querying the database directly —
-chosen for the search hot path, at the cost of more moving parts.** A
-direct-DB query is simpler to build and reason about (one source, no
-projection to keep in sync) but can't sustain ~160,000 reads/sec without
-either a database far larger than this workload otherwise needs or
-read replicas that reintroduce the same staleness the cache already
-has. The streaming projection adds operational surface — a stream
-processor that can lag or crash, a cache that can go stale — but it's
-the only one of the two that meets the sub-second search SLA at this
-read volume.
+<CompareTable
+  title="Serving the search hot path: streaming projection + cache vs. direct DB query"
+  rows={[
+    {
+      approach: "Query the database directly",
+      pros: ["Simpler to build and reason about — one source, no projection to keep in sync"],
+      cons: [
+        "Can't sustain ~160,000 reads/sec without a database far larger than this workload otherwise needs",
+        "Read replicas as a fix reintroduce the same staleness the cache already has",
+      ],
+    },
+    {
+      approach: "Streaming projection + cache",
+      pros: ["Meets the sub-second search SLA at this read volume"],
+      cons: [
+        "More operational surface — a stream processor that can lag or crash, a cache that can go stale",
+      ],
+      chosenBecause: "it's the only one of the two that meets the SLA at this read volume",
+    },
+  ]}
+/>
 
-**Centralized ingestion vs. per-region ingestion clusters — chosen
-centralized, for now.** One ingestion pipeline for the whole network is
-simpler to operate, monitor, and reason about — one blast radius to
-understand when something breaks. Per-region clusters (one ingestion
-pipeline per metro or geography) cut cross-country network latency for
-edge devices and contain a regional outage to that region, but multiply
-operational complexity: N pipelines to deploy and monitor, plus a new
-aggregation step to merge regional views for a search that spans a
-boundary. Centralized is the right starting point at this scale; it's
-the first thing to reconsider if a single region's traffic starts
-dominating capacity planning for the whole system.
+<CompareTable
+  title="Ingestion topology: centralized vs. per-region clusters"
+  rows={[
+    {
+      approach: "Centralized ingestion",
+      pros: [
+        "Simpler to operate, monitor, and reason about",
+        "One blast radius to understand when something breaks",
+      ],
+      cons: ["Cross-country network latency for edge devices"],
+      chosenBecause: "the right starting point at this scale",
+    },
+    {
+      approach: "Per-region ingestion clusters",
+      pros: [
+        "Cuts cross-country latency for edge devices",
+        "Contains a regional outage to that region",
+      ],
+      cons: [
+        "N pipelines to deploy and monitor instead of one",
+        "Needs a new aggregation step to merge regional views for a search spanning a boundary",
+      ],
+    },
+  ]}
+/>
 
 <QuizItem
   question="A candidate proposes running reservations through the same eventually-consistent pipeline as live occupancy, 'to keep the architecture simple.' What's the concrete failure this risks?"
@@ -373,44 +622,42 @@ dominating capacity planning for the whole system.
 
 ## Worked example: a search in Seattle, a car at Lot #4821
 
-<DiagramPanel
+<D2Diagram
   title="Concurrent search and occupancy update"
   type="sequence"
-  chart={`sequenceDiagram
-    participant App as Mobile app (Seattle)
-    participant API as API/gateway layer
-    participant GeoIdx as Geospatial index
-    participant Cache as Serving cache
-    participant Gate as Lot #4821 gate
-    participant GW as Ingestion gateway
-    participant Log as Event log
-    participant SP as Stream processor
+  chart={`shape: sequence_diagram
+app: Mobile app (Seattle)
+api: API/gateway layer
+geo: Geospatial index
+cache: Serving cache
+gate: Lot #4821 gate
+gw: Ingestion gateway
+log: Event log
+sp: Stream processor
 
-    App->>API: search(lat, lng, radius=2mi)
-    API->>GeoIdx: geohash-prefix lookup
-    GeoIdx-->>API: 40 candidate lot_ids (incl. #4821: 37 free)
+app -> api: search(lat, lng, radius=2mi)
+api -> geo: geohash-prefix lookup
+geo -> api: 40 candidate lot_ids (incl. #4821: 37 free)
 
-    par Concurrently, a gate event lands
-      Gate->>GW: car entered, spot 4821-118
-      GW->>Log: append (lot_id=4821, seq=90142)
-      Log->>SP: consume
-      SP->>Cache: set lot 4821 available = 36
-    end
+gate -> gw: car entered, spot 4821-118
+gw -> log: append (lot_id=4821, seq=90142)
+log -> sp: consume
+sp -> cache: set lot 4821 available = 36
 
-    API->>Cache: batch read (MGET 40 lot_ids)
-    Cache-->>API: 40 counts (lot #4821 may read 37 or 36,\ndepending on exact timing)
-    API-->>App: ranked results, under 1 second
-    Note over Cache,SP: If the app's read raced ahead of the cache update,\nit shows 37 — corrected within the propagation SLA\n(a few seconds) on the next search or refresh.
+api -> cache: batch read (MGET 40 lot_ids)
+cache -> api: 40 counts (lot #4821 may read 37 or 36)
+api -> app: ranked results, under 1 second
 `}
 />
 
-This is the eventual-consistency trade-off made concrete, not abstract:
-the search and the gate event are racing, and depending on exact timing
-the app might display 37 or 36 free spots for Lot #4821 for a few
-seconds. Nobody's booking is broken by that gap — the number just
-catches up. That's exactly the behavior the earlier trade-off section
-argued is the right one to accept for a display value, and exactly the
-behavior that would be unacceptable for a reservation confirmation.
+The gate event and the search read are drawn interleaved on purpose:
+they're racing. Depending on exact timing the app might display 37 or 36
+free spots for Lot #4821 for a few seconds. Nobody's booking is broken by
+that gap — the number just catches up, corrected within the propagation
+SLA (a few seconds) on the next search or refresh. That's exactly the
+behavior the trade-offs section above argued is the right one to accept
+for a display value, and exactly the behavior that would be unacceptable
+for a reservation confirmation.
 
 <QuizItem
   question="In the diagram above, if the driver whose car just entered Lot #4821 also had a live reservation for spot 4821-118, would this flow double-count that spot as both 'reserved' and 'occupied'?"
@@ -419,22 +666,22 @@ behavior that would be unacceptable for a reservation confirmation.
 
 ## Interview angle
 
-**"How does a lot going fully offline get reconciled?"** The last known
-count freezes rather than the operator assuming zero availability — the
-ingestion gateway's health check flags the lot as stale after a timeout,
-the UI can surface "last updated N minutes ago" instead of hiding the
-lot, and the reconciliation job re-syncs the count the moment the
-connection (or a partner's next scheduled pull) comes back.
-
-**"How does the reservation service avoid conflicting with the
-live-occupancy feed?"** By never trusting the eventually-consistent
-count as its own source of truth for whether a spot can be reserved —
-the reservation service keeps its own strongly-consistent ledger of
-what's committed, and the *displayed* available count is a function of
-both feeds together (occupancy count minus active reservations), rather
-than either feed alone deciding what's bookable. The full mechanics of
-that combination are exactly what the open challenge below asks you to
-design.
+- **"How does a lot going fully offline get reconciled?"** The last
+  known count freezes rather than the operator assuming zero
+  availability — the ingestion gateway's health check flags the lot as
+  stale after a timeout, the UI can surface "last updated N minutes ago"
+  instead of hiding the lot, and the reconciliation job re-syncs the
+  count the moment the connection (or a partner's next scheduled pull)
+  comes back.
+- **"How does the reservation service avoid conflicting with the
+  live-occupancy feed?"** By never trusting the eventually-consistent
+  count as its own source of truth for whether a spot can be reserved —
+  the reservation service keeps its own strongly-consistent ledger of
+  what's committed, and the *displayed* available count is a function of
+  both feeds together (occupancy count minus active reservations),
+  rather than either feed alone deciding what's bookable. The full
+  mechanics of that combination are exactly what the open challenge below
+  asks you to design.
 
 ## Practice & Self-Check
 
@@ -468,6 +715,11 @@ design.
 <QuizItem
   question="Why does this design use strong consistency for reservations but eventual consistency for the live-occupancy display, instead of one consistency model for both?"
   answer="They have different failure costs: staleness in a displayed count costs nothing (the driver sees a slightly outdated number for a few seconds), while staleness in a reservation confirmation can double-book a paid spot — treating both the same way either wastes latency/cost on the read-heavy display path or risks the money-bearing path."
+/>
+
+<QuizItem
+  question="If the serving cache is flushed while ~160,000 reads/sec are hitting it, what specifically prevents a cache stampede from taking down the database?"
+  answer="Readers are never allowed to fall through to the database on a miss — the cache is rebuilt out-of-band by replaying the compacted topic, and requests that arrive mid-rebuild get a short-lived stale value or wait behind a single in-flight rebuild instead of each independently querying the database."
 />
 
 <QuizItem
@@ -530,12 +782,6 @@ available again without any gate event ever having to fire.
     "Explained that the served availability number is a combination of the eventually-consistent occupancy feed and the strongly-consistent reservation ledger, computed at read time",
     "Described what happens when the gate-entry event for a reserved vehicle arrives — the reservation is retired, not counted a second time as a fresh occupancy",
     "Covered the case where the reserved driver never arrives (the hold expires and the spot becomes available again)",
-    "Kept the reservation service as its own bounded context with its own strongly-consistent store, rather than folding reservation state into the live-occupancy stream"
+    "Kept the reservation service as its own bounded context with its own strongly-consistent store, rather than folding reservation state into the live-occupancy stream",
   ]}
 />
-
-**Self-score:** 5/5 rubric items checked — Interview-ready. 2-3 checked
-— Practicing, revisit the deep dive on keeping availability fresh and
-the trade-offs section before your next attempt. 0-1 checked — Novice,
-re-read the worked example and interview-angle sections above; this
-challenge is a direct extension of both.
