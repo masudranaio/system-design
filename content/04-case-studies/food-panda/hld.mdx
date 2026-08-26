@@ -1,0 +1,813 @@
+---
+title: "Food Panda: High-Level Design"
+---
+
+A ride-share match is instant: rider and driver both exist right now, so
+the system just has to find the closest pair. A food-delivery match can't
+be instant, because one side of the match — the meal — doesn't exist yet.
+Food Panda's hard problem is coordinating three parties who don't share a
+database, around an order whose "ready" time is a kitchen's best guess,
+not a fact the system controls.
+
+## Problem framing
+
+{/* concept-dependency: HLD-08 not yet built, explained inline */}
+This is a **three-sided marketplace**: customer, restaurant, and courier,
+each running their own app, each trusting their own clock. Contrast this
+with Ride-Sharing (CS-09), a **two-sided** marketplace — rider and driver
+are both available the instant a trip request fires, so matching is a
+pure nearest-neighbor search. Food Panda's third side, the restaurant,
+inserts a **production step** between "order placed" and "ready to
+match": food has to be cooked. A courier assigned too early stands
+around a hot kitchen; a courier assigned too late leaves the food
+cooling on the counter. Matching timing, not just matching distance, is
+the defining problem.
+
+A second contrast worth naming up front, against Ticketmaster (CS-08):
+Ticketmaster's hard problem is *contention* — many buyers racing for one
+scarce seat, solved with locking. Food Panda's three parties don't
+contend for the same resource at all — nobody is racing to "buy" the
+order. Each party mutates their own view of it (restaurant marks it
+`preparing`, courier marks it `picked_up`) without ever touching the
+same row the others touch. The interesting problem here is **event
+ordering and fan-out notification**, not locking — covered in its own
+deep dive below.
+
+<Point icon="users">Three independent actors, no shared database, no
+mutual trust in each other's clocks or state.</Point>
+<Point icon="clock">A real-world production step (cooking) the system
+can only estimate, never control.</Point>
+<Point icon="branch">No resource contention between the three parties —
+unlike Ticketmaster's seat inventory, nobody is racing to lock the same
+row.</Point>
+
+<QuizItem
+  question="Why can't Food Panda match a courier to an order the instant it's placed, the way Ride-Sharing matches a driver to a rider request?"
+  answer="Because the order isn't ready to be picked up yet — the restaurant still has to cook it. Matching too early leaves a courier waiting at the restaurant; the system has to time the match against a prep-time estimate, not just against courier proximity."
+/>
+
+## Requirements & capacity estimate
+
+**Functional requirements:**
+
+- Browse/search restaurants by location, cuisine, and availability
+- View a restaurant's menu and place an order (cart → checkout)
+- Restaurant accepts or rejects the order, then reports prep progress
+  (received → preparing → ready for pickup)
+- System matches the order to an available courier and offers the
+  assignment (accept/decline with timeout)
+- Courier picks up and delivers the order; live location is visible to
+  the customer throughout
+- Delivery is confirmed (by customer or courier)
+- Cancellation path for customer, restaurant, or courier, gated to the
+  lifecycle stages where each is actually allowed to cancel
+
+**Non-functional requirements:**
+
+- Matching latency: courier assigned within a few seconds of an order
+  going ready-soon, not after the food is already cold
+- Location-update throughput: tens of thousands of courier GPS pings/sec
+  citywide at peak, delivered to trackers within a few seconds
+- ETA accuracy: a live countdown that's usefully close and recalculates
+  smoothly, not exact and not jumpy
+- High availability through 5-10x baseline order volume at lunch/dinner
+  rushes
+- Eventual consistency across the three parties' views of one order is
+  acceptable — explicitly not a strict-consistency problem the way seat
+  inventory is
+
+**Out of scope:** restaurant menu/inventory internals, payment
+authorization/settlement details, courier onboarding and pay structure,
+search ranking, in-app chat.
+
+<KeyStat
+  value="~5,800 orders/sec"
+  label="citywide peak order-placement rate, dinner rush"
+  detail="A large metro area with 5M residents, 2% placing a delivery order
+during a 2-hour dinner peak: 100,000 orders over 7,200 seconds ≈ 14
+orders/sec average. Dinner rush concentrates that further — most of the
+2-hour window's orders cluster in a 30-40 minute core, and this repeats
+across the ~15 comparable metro markets a national operator like this
+runs concurrently, giving low-thousands of orders/sec at the system-wide
+peak. Round to ~5,800/sec as the target the matching and order services
+must sustain, not survive as a one-off spike."
+/>
+
+<KeyStat
+  value="~50,000 pings/sec"
+  label="courier GPS location-ping ingestion at peak"
+  detail="Assume 25,000 active couriers citywide during peak, each app
+pushing a location ping every 5 seconds while on a delivery: 25,000 ÷ 5s
+= 5,000 pings/sec for one metro. Across ~10 metros simultaneously in
+their own dinner peaks (peaks don't align across time zones, but this is
+the same-city worst case scaled out) gives the ~50,000/sec ingestion
+target the location pipeline is sized against."
+/>
+
+<KeyStat
+  value="3 readers per order"
+  label="fan-out multiplier: customer + restaurant + courier all watch one order"
+  detail="Every order has at minimum three live subscribers to its state:
+the customer's tracking screen, the restaurant's order queue, and (once
+matched) the courier's app. A push-based fan-out has to deliver every
+state transition to all three, not just persist it once — a naive
+polling design would instead turn this into 3x the read load against a
+shared order table, which is what the event-backbone architecture below
+avoids."
+/>
+
+## Architecture
+
+<D2Diagram
+  title="Three-sided marketplace overview"
+  type="architecture"
+  chart={`
+direction: right
+customer: Customer App {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+restaurant: Restaurant App / POS {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+courier: Courier App {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+gateway: API Gateway {
+  style.fill: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+platform: Platform Services {
+  order: Order Service { style.fill: "#0e7c86"; style.font-color: "#ffffff" }
+  matching: Matching Service { style.fill: "#0e7c86"; style.font-color: "#ffffff" }
+  tracking: Tracking Service { style.fill: "#0e7c86"; style.font-color: "#ffffff" }
+  eta: ETA Service { style.fill: "#0e7c86"; style.font-color: "#ffffff" }
+}
+customer -> gateway: browse, order, track
+restaurant -> gateway: accept, prep updates
+courier -> gateway: location, accept/decline offers
+gateway -> platform.order
+gateway -> platform.matching
+gateway -> platform.tracking
+gateway -> platform.eta
+`}
+/>
+
+*All three apps talk only to the gateway, never to each other directly —
+the platform services in the middle are what make three untrusted
+parties agree on one order's state.*
+
+Each of the four architecture diagrams below is one path through this
+system, kept small on purpose rather than combined into one dense
+picture.
+
+<D2Diagram
+  title="Order-placement path"
+  type="architecture"
+  chart={`
+direction: right
+client: Customer App {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+gw: API Gateway {
+  style.fill: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+order_svc: Order Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+order_db: Order DB {
+  shape: cylinder
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+payment: Payment Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+rest_notify: Restaurant Notification (push/POS) {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+rest_app: Restaurant App {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+client -> gw: place order (cart)
+gw -> order_svc
+order_svc -> payment: authorize
+payment -> order_svc: authorized
+order_svc -> order_db: write order, status=placed
+order_svc -> rest_notify: new order
+rest_notify -> rest_app: alert (app / POS ticket)
+`}
+/>
+
+*Payment is authorized before the restaurant ever sees the order, so a
+declined card never reaches the kitchen — but capture/settlement details
+are out of scope for this lesson.*
+
+<D2Diagram
+  title="Matching / dispatch path"
+  type="architecture"
+  chart={`
+direction: right
+order_svc: Order Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+ready_signal: order.ready_soon event {
+  shape: queue
+  style.fill: "#4b5262"
+  style.font-color: "#ffffff"
+}
+matching: Matching Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+geo: Geo-index (courier locations) {
+  shape: cylinder
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+courier_pool: Candidate Couriers {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+offer: Offer + accept/decline (TTL) {
+  style.fill: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+order_svc -> ready_signal: prep-time estimate crosses threshold
+ready_signal -> matching
+matching -> geo: nearby available couriers near restaurant
+geo -> matching: candidate set
+matching -> courier_pool: rank candidates
+matching -> offer: send offer to top candidate
+offer -> matching: accept / decline / timeout
+`}
+/>
+
+*Matching doesn't wait for "ready" — it fires on a `ready_soon` signal
+(prep-time estimate crossing a threshold) so a courier is already en
+route to the restaurant when the food actually comes off the line.*
+
+<D2Diagram
+  title="Live-tracking data path"
+  type="architecture"
+  chart={`
+direction: right
+courier: Courier App {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+ingest: Location Ingestion Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+geo_store: Geo Store / Cache {
+  shape: cylinder
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+fanout: Fan-out Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+cust1: Customer A (WebSocket) {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+cust2: Customer B (SSE) {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+courier -> ingest: GPS ping (~5s interval)
+ingest -> geo_store: write latest position
+ingest -> fanout: courier.location_updated
+fanout -> cust1: push, order #1841
+fanout -> cust2: push, order #1842
+`}
+/>
+
+*One courier update fans out to every customer currently subscribed to
+one of that courier's active orders — the fan-out step is what's new
+here relative to Ride-Sharing's single-rider tracking case.*
+
+<D2Diagram
+  title="Event backbone decoupling order state from its consumers"
+  type="architecture"
+  chart={`
+direction: right
+order_svc: Order Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+bus: Kafka (order-events topic) {
+  shape: queue
+  style.fill: "#4b5262"
+  style.font-color: "#ffffff"
+}
+matching: Matching Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+tracking: Tracking Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+notify: Notification Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+analytics: Analytics Consumer {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+order_svc -> bus: "order.placed, order.accepted, order.ready_soon, order.delivered ..."
+bus -> matching
+bus -> tracking
+bus -> notify
+bus -> analytics
+`}
+/>
+
+*Each consumer reads the same event stream at its own pace and scales
+independently — the matching service falling behind for a second
+doesn't back up notifications, and a slow analytics job never touches
+the order write path at all.*
+
+## Deep dives
+
+### Courier-order matching
+
+{/* concept-dependency: HLD-08 not yet built, explained inline */}
+"Assign the nearest courier" is the naive answer; real systems weigh
+several strategies against each other, because nearest-first can leave a
+slightly-farther courier idle while a closer one is about to become busy
+elsewhere.
+
+<CompareTable
+  title="Courier-order matching strategies"
+  rows={[
+    {
+      approach: "Greedy nearest-available",
+      pros: ["Simplest to implement", "Lowest matching latency — decide the instant a candidate is found"],
+      cons: ["Locally optimal only — can strand a courier 2 blocks away while a better global assignment existed", "No lookahead across simultaneously-ready orders"],
+    },
+    {
+      approach: "Batch-window assignment",
+      pros: ["Solves a small optimization problem over N orders and M couriers together — better overall efficiency and fairness", "Reduces total courier travel distance across the batch"],
+      cons: ["Adds a deliberate wait (a few seconds) before dispatching, which costs matching latency", "More complex — needs a solver, not just a nearest-neighbor query"],
+      chosenBecause: "Food Panda's real dispatch systems (this pattern is documented in DoorDash's public engineering writeups) run this on a short interval per geographic zone, trading a few seconds of latency for meaningfully better courier utilization",
+    },
+    {
+      approach: "Offer/accept with timeout",
+      pros: ["Respects courier autonomy — a courier can decline an offer they don't want", "Naturally handles a courier going unresponsive: timeout triggers re-offer without a special-case code path"],
+      cons: ["Adds latency per rejected/timed-out offer before the next candidate is tried", "Needs a re-offer/escalation policy so a bad batch of declines doesn't stall an order indefinitely"],
+    },
+  ]}
+/>
+
+These aren't mutually exclusive: a batch-window solver picks the
+*candidate* courier for each order, and that candidate is still offered
+the assignment with a short accept/decline timeout (typically 15-30
+seconds) rather than force-assigned — combining the second and third
+rows.
+
+Nearest-courier candidate search itself — "which couriers are within 2km
+of this restaurant right now" — uses the same geo-indexing primitive
+Ride-Sharing's matching lesson covers for rider/driver search
+(geohash/quadtree/H3-grid proximity lookups); that mechanism doesn't
+change here, only what's done with the candidate set once it's found.
+
+<QuizItem
+  question="Why might a batch-window matching approach out-perform greedy nearest-available, even though it adds a few seconds of latency?"
+  answer="Greedy assignment locks in a courier the instant a candidate is found, which can strand a nearby courier for a slightly-later order while a farther courier gets sent on a longer trip. A batch window collects several orders and couriers together and solves them jointly, reducing total travel distance and improving fairness across the batch — at the cost of a short deliberate delay before dispatching."
+/>
+
+### Order batching
+
+A courier carrying one order at a time is safe but inefficient — most of
+a delivery trip is driving, not carrying food. Batching lets one courier
+serve multiple orders in a single trip.
+
+- **Same-restaurant batching** — two orders from the same restaurant,
+  picked up together, delivered on one loop. Lowest risk: both orders
+  came off the same kitchen at roughly the same time, so neither sits
+  much longer than a single-order trip would have taken.
+- **Route-batching** — orders from different nearby restaurants,
+  combined because their pickup and drop-off points overlap well enough
+  that one courier's loop covers both without a large detour for either.
+  Higher courier utilization, but the second order's food waits longer
+  in the courier's bag while the first is delivered.
+- **When *not* to batch** — perishable/hot food with a short
+  quality window, and orders with a tight promised ETA the platform has
+  already committed to the customer. The matching service checks a
+  batch candidate's added detour time against the second order's
+  remaining ETA budget before combining; if adding a stop would blow
+  through that budget, it dispatches the order solo instead.
+
+<Point icon="clock">Batching trades delivery speed for courier
+utilization and per-order delivery cost — it's a knob, not a default.</Point>
+
+<QuizItem
+  question="A courier already has one hot pizza order in the bag. The matching service is deciding whether to add a second order from a different restaurant 8 minutes out of the way. What should it check before batching them?"
+  answer="Whether the 8-minute detour still fits inside both orders' remaining ETA budget and quality window — pizza degrades fast, so an 8-minute delay may already blow the promised ETA or food-quality bar for the first order. If it does, the service should dispatch the second order to a different courier instead of batching."
+/>
+
+### Live location tracking
+
+{/* concept-dependency: HLD-08 not yet built, explained inline */}
+Two questions here are distinct even though they sound like one: how a
+courier's phone *gets* its location to the server, and how the geo-index
+that answers "which couriers are near X" is structured. Ride-Sharing's
+matching lesson covers the geo-index choice (Redis geospatial commands
+vs. a quadtree/H3-grid) in depth for the driver-search case — that
+choice is unchanged here, so this lesson doesn't re-derive it.
+
+<CompareTable
+  title="Push vs. poll for courier location ingestion"
+  rows={[
+    {
+      approach: "Push (courier streams via WebSocket)",
+      pros: ["Low end-to-end latency — server has the update within ~1 RTT of the phone sending it", "No wasted requests when the courier hasn't moved"],
+      cons: ["Holds an open connection per active courier — more server-side connection state to manage", "Needs reconnect/backoff handling on flaky mobile networks"],
+      chosenBecause: "tens of thousands of couriers at peak makes the per-update latency win worth the connection-management cost",
+    },
+    {
+      approach: "Poll (server requests location periodically)",
+      pros: ["Simpler server model — no persistent connections to track", "Easier to reason about under load — every request is independent"],
+      cons: ["Latency floor is the poll interval, not the actual update rate", "Wastes requests polling couriers who haven't moved"],
+    },
+  ]}
+/>
+
+What's genuinely new relative to Ride-Sharing's single-rider tracking
+case: one courier's location update has to **fan out to every customer
+currently tracking one of that courier's active orders** — up to a
+courier's batch size at once, not just one subscriber. The fan-out
+service (diagram above) keeps a subscription map (`courier_id →
+[order_id...] → [customer_connection...]`) and pushes each location
+update to all of them, rather than making each customer's client poll
+the geo-store directly.
+
+<QuizItem
+  question="A courier is carrying two batched orders. Their location updates. How many customer clients need to receive that update, and via what mechanism?"
+  answer="Both customers tracking those two orders — the fan-out service looks up all order subscriptions tied to that courier_id and pushes the update to each customer's live connection (WebSocket/SSE), rather than each customer separately polling the geo-store."
+/>
+
+### ETA prediction
+
+{/* concept-dependency: HLD-08 not yet built, explained inline */}
+A single "12 minutes" estimate hides three genuinely different
+predictions chained together — treating ETA as a pipeline, not one
+number, is what makes it possible to improve or debug any one stage
+independently.
+
+1. **Kitchen prep-time estimate** — how long until the order is ready
+   for pickup. Modeled per-restaurant from historical prep times, order
+   size, and current queue depth (a restaurant mid-rush takes longer per
+   order than an empty one).
+2. **Courier-to-restaurant time** — once a courier is matched, real-time
+   routing (live traffic, road network) from the courier's current
+   position to the restaurant.
+3. **Restaurant-to-customer time** — routing from the restaurant to the
+   delivery address, using the same live-traffic routing as step 2.
+
+The customer-facing ETA is roughly `max(prep-done time, courier-arrival
+time) + restaurant-to-customer time` — the courier can arrive before the
+food is ready (then waits) or the food can be ready before the courier
+arrives (then it waits), and the total only starts counting down the
+final leg once both are done.
+
+<D2Diagram
+  title="ETA as a pipeline of estimates"
+  type="architecture"
+  chart={`
+direction: right
+prep: Kitchen prep-time model {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+c2r: Courier-to-restaurant routing {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+r2c: Restaurant-to-customer routing {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+combine: "max(prep, c2r) + r2c" {
+  style.fill: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+customer: Customer App {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+prep -> combine
+c2r -> combine
+r2c -> combine
+combine -> customer: live countdown
+`}
+/>
+
+*Each stage has its own error bar and its own model — a bad prep-time
+estimate at a busy restaurant shouldn't be blamed on the routing model,
+and vice versa.*
+
+ETAs are **recalculated periodically**, not computed once at order time,
+because every input can change mid-order: a kitchen falls behind, a
+courier hits traffic or takes a detour to fulfill a batched pickup, or a
+courier declines an offer and re-matching adds a delay. Recomputing on a
+short interval (and on key events — courier assigned, courier picked up)
+keeps the countdown honest instead of silently drifting from reality
+until the final "arriving now" jump.
+
+<QuizItem
+  question="Why is the customer-facing ETA modeled as max(prep-done time, courier-arrival time) + restaurant-to-customer time, rather than just prep-time + courier-travel-time + delivery-time added straight through?"
+  answer="Because prep and courier travel happen in parallel, not in sequence — the courier can be en route while the kitchen is still cooking. The final delivery leg can only start once both are done, so the pipeline takes the max of the two parallel estimates before adding the sequential final leg."
+/>
+
+### Order lifecycle fan-out / notification
+
+{/* concept-dependency: HLD-06 not yet built, explained inline */}
+Ticketmaster's multi-party problem is a **saga** — one transactional flow
+(hold → charge → confirm) coordinated by a single service, because a
+seat can only be sold once and something has to own that decision.
+Food Panda's multi-party problem has no such single-writer transaction:
+customer, restaurant, and courier each mutate their *own* view of the
+order independently, and nothing is being contended for. The system's
+job is just making sure all three see every state change promptly, in
+order, without polling a shared table.
+
+- Every order-state transition (`placed`, `accepted`, `preparing`,
+  `ready_for_pickup`, `courier_assigned`, `picked_up`, `delivered`,
+  `cancelled`) is published as an event on the order-events topic shown
+  in the architecture section.
+- Each party's app holds a live connection (WebSocket/SSE) or push
+  subscription keyed to their relevant orders; a fan-out consumer reads
+  the event stream and pushes only the events each subscriber cares
+  about — the restaurant doesn't need "courier location updated," the
+  customer doesn't need "kitchen queue depth changed."
+- **Ordering matters more than transactional atomicity here**: a
+  customer seeing `picked_up` before `ready_for_pickup` looks broken even
+  though no data was corrupted. Kafka's per-partition ordering (partition
+  by `order_id`) guarantees each order's own events arrive at every
+  consumer in the order they were published, without needing a
+  distributed transaction across the three parties' views.
+
+<QuizItem
+  question="Food Panda's order lifecycle involves three independent parties, just like Ticketmaster's booking flow involves multiple steps. Why isn't Food Panda's lifecycle modeled as a saga the same way?"
+  answer="A saga coordinates a single transactional flow with compensating actions because something is being contended for (a seat that can only sell once). In Food Panda, customer, restaurant, and courier each mutate only their own view of the order — nobody is racing for the same resource — so the actual problem is delivering every state change to all three promptly and in order, which per-order event ordering solves without needing saga-style compensation."
+/>
+
+### Restaurant availability & capacity signal
+
+Matching a courier to an order that a restaurant can't actually make on
+time wastes a courier's trip and a customer's wait. The system needs a
+live **capacity signal** feeding into whether new orders are even
+routed to a restaurant — the menu/inventory internals behind that signal
+are out of scope, but the signal itself isn't.
+
+- **Manual toggle** — the restaurant explicitly marks itself
+  "busy"/"paused," simplest signal, depends on staff remembering to flip
+  it.
+- **Order-queue-depth auto-throttle** — the order service tracks how
+  many orders are currently `accepted`/`preparing` for a restaurant
+  against a configured capacity ceiling, and automatically stops routing
+  new orders (or extends the quoted prep-time estimate) once the queue
+  gets deep, without waiting on a human to notice.
+
+Auto-throttle is the more reliable of the two because it reacts to
+actual load rather than a staff member's attention during a dinner rush
+— but it needs the manual toggle as an override for cases the queue
+depth can't see (a broken oven, a walk-in line eating into kitchen
+capacity).
+
+## Trade-offs
+
+<CompareTable
+  title="Key design trade-offs"
+  rows={[
+    {
+      approach: "Greedy nearest-courier assignment",
+      pros: ["Lowest matching latency", "Simple to implement and reason about"],
+      cons: ["Locally optimal only — worse overall courier utilization and fairness across a zone"],
+    },
+    {
+      approach: "Batch-window optimal assignment",
+      pros: ["Better zone-wide courier utilization and total travel distance"],
+      cons: ["A few seconds of added matching latency per order"],
+      chosenBecause: "the latency cost is small relative to total delivery time, and the efficiency gain compounds across thousands of concurrent orders per zone",
+    },
+    {
+      approach: "Push (WebSocket/SSE) live tracking",
+      pros: ["Low latency, no wasted requests"],
+      cons: ["More server-side connection state and reconnect handling"],
+      chosenBecause: "customer-visible tracking staleness is a top complaint driver in this product, worth the added connection-management cost",
+    },
+    {
+      approach: "Poll live tracking",
+      pros: ["Simpler server model, no persistent connections"],
+      cons: ["Latency floor equals poll interval"],
+    },
+    {
+      approach: "Single-order-per-trip",
+      pros: ["Fastest possible delivery per order, simplest routing"],
+      cons: ["Lower courier utilization, higher per-order delivery cost"],
+    },
+    {
+      approach: "Batching (same-restaurant / route)",
+      pros: ["Higher courier utilization, lower per-order cost"],
+      cons: ["Later-picked-up order in the batch waits longer, risking food quality/ETA"],
+      chosenBecause: "capped and ETA-budget-checked batching (see Order batching above) captures most of the efficiency gain while bounding the quality risk",
+    },
+    {
+      approach: "Eventual consistency across the three parties' views",
+      pros: ["No coordination overhead between customer, restaurant, and courier writes — each party's app stays fast and independently available"],
+      cons: ["A few seconds of staleness is possible on any one party's view of the order"],
+      chosenBecause: "unlike Ticketmaster's seat inventory, nothing here is a scarce resource two parties could double-claim, so there's no correctness reason to pay for strong consistency",
+    },
+  ]}
+/>
+
+## Worked example: one order, end to end
+
+Priya orders pad thai from a nearby Thai restaurant at 7:04pm, mid dinner
+rush.
+
+<D2Diagram
+  title="One order traced end-to-end"
+  type="sequence"
+  chart={`
+shape: sequence_diagram
+priya: Priya (customer)
+order_svc: Order Service
+rest: Restaurant App
+matching: Matching Service
+courier: Courier (Sam)
+tracking: Tracking Service
+
+priya -> order_svc: place order (7:04:00pm)
+order_svc -> rest: order.placed event
+rest -> order_svc: accept, prep estimate 14min
+order_svc -> order_svc: schedule ready_soon at prep_done - 4min
+order_svc -> matching: order.ready_soon (7:14:00pm)
+matching -> courier: offer (accept/decline, 20s timeout)
+courier -> matching: accept (7:14:08pm)
+matching -> order_svc: order.courier_assigned
+rest -> order_svc: order.ready_for_pickup (7:18:00pm)
+courier -> order_svc: order.picked_up (7:18:40pm)
+courier -> tracking: location pings, every 5s
+tracking -> priya: live position push
+courier -> order_svc: order.delivered (7:27:10pm)
+order_svc -> priya: delivery confirmed
+`}
+/>
+
+The `ready_soon` signal fires 4 minutes before the kitchen's own
+prep-done estimate — not at 0 minutes — precisely so Sam is already
+walking toward the restaurant instead of starting the search only once
+the food is already sitting on the counter. Every arrow in the trace
+above is one event on the order-events topic; the restaurant, Priya, and
+Sam each only see the subset relevant to their own app, per the fan-out
+deep dive above.
+
+## Interview angle
+
+**"The offered courier declines, or the offer times out."** The matching
+service re-offers to the next-ranked candidate from the same candidate
+set immediately, rather than re-running the full geo-search from
+scratch — the candidate pool from the original batch/search is still
+valid for the next few seconds. If several offers in a row are declined,
+that's itself a signal (low courier supply in the zone right now) worth
+feeding back into ETA estimates rather than silently retrying forever.
+
+**"The restaurant rejects the order after payment already went
+through."** The order moves to a `rejected` state, and the order service
+triggers a refund as an independent step against the payment provider —
+the same pattern as Ticketmaster's compensating action on a failed
+booking, but there's no seat to release here, just a payment to reverse
+and the customer to notify. (Refund policy specifics stay out of scope,
+per this lesson's problem statement — the interview-relevant shape is
+that rejection and refund are two separate steps, not one.)
+
+**"A courier goes offline mid-delivery."** Location ingestion detects a
+gap once pings stop arriving past a threshold (e.g. 30-45 seconds with
+no update). The customer-facing tracker falls back to the last-known
+position plus a "having trouble reaching your courier" state rather than
+silently freezing the map or showing a stale position as if it were
+live — and support/dispatch gets an alert to check in or reassign if the
+gap persists.
+
+**"Scale the matching service across cities."** Matching is naturally
+**geo-partitioned**: a courier in Berlin never competes for an order in
+Manila, so the candidate search, batch-window solver, and offer/accept
+logic can all run as independent per-city (or per-zone-within-a-city)
+instances with no cross-partition coordination needed — the same
+partitioning shape Ride-Sharing's matching service uses for the same
+reason.
+
+## Practice & Self-Check
+
+### Recap quiz
+
+<QuizItem
+  question="What makes Food Panda a three-sided marketplace rather than a two-sided one like Ride-Sharing?"
+  answer="The restaurant is a third independent party whose prep time is a real production step the system can only estimate, not control — matching has to account for when the food will actually be ready, not just courier proximity, which a two-sided rider/driver match doesn't need to consider."
+/>
+
+<QuizItem
+  question="Name two order-batching strategies and one situation where the matching service should avoid batching altogether."
+  answer="Same-restaurant batching (two orders from one kitchen, one trip) and route-batching (orders from different nearby restaurants combined into one loop). Batching should be skipped for perishable/hot food with a tight quality window or an order with a promised ETA the added detour would blow through."
+/>
+
+<QuizItem
+  question="List the three stages of the ETA pipeline and how they combine into the customer-facing countdown."
+  answer="Kitchen prep-time estimate, courier-to-restaurant travel time, and restaurant-to-customer travel time. The countdown is roughly max(prep-done time, courier-arrival time) + restaurant-to-customer time, since prep and courier travel happen in parallel and only the final leg is sequential."
+/>
+
+<QuizItem
+  question="Why does this system favor push (WebSocket/SSE) over polling for courier location updates, given the added connection-management cost?"
+  answer="Push gets each location update to subscribed customers within about one round trip of the courier's phone sending it, with no wasted requests when the courier hasn't moved — polling's latency floor is the poll interval itself, and tracking staleness is a highly visible customer complaint this product can't tolerate."
+/>
+
+<QuizItem
+  question="Why does Food Panda accept eventual consistency across the customer, restaurant, and courier views of one order, when Ticketmaster insists on strong consistency for seat state?"
+  answer="Ticketmaster's seats are a scarce resource two buyers could both claim, so a stale read can lead to an unrecoverable double-sell. Food Panda's three parties each mutate only their own view of the order — nothing is being contended for — so a few seconds of staleness on one party's view has no correctness consequence, only a UX one."
+/>
+
+<QuizItem
+  question="Why does the order-ready signal fire a few minutes before the kitchen's prep-done estimate, rather than exactly at it?"
+  answer="Because matching and courier travel to the restaurant take time too. Firing early (e.g. 4 minutes before prep-done) means a courier is already en route and arrives close to when the food actually comes off the line, instead of the matching search only starting once the food is already sitting out cooling."
+/>
+
+<QuizItem
+  question="Why is Food Panda's order lifecycle handled with event-driven fan-out rather than a saga like Ticketmaster's booking flow?"
+  answer="A saga exists to coordinate compensating actions around a single contended resource. Food Panda's three parties never contend for the same resource — they each need to see the same sequence of state changes for an order they don't share a database row for, which per-order-partitioned event ordering solves without needing transactional coordination."
+/>
+
+### Open design challenge
+
+**Extend the matching service to support scheduled orders (deliver at a
+specific future time) alongside on-demand orders.** Everything in this
+lesson assumes an order wants a courier as soon as possible. Now a
+customer can place an order at 2:00pm asking for delivery at 7:00pm.
+Design how the matching service should change: when should the system
+actually start the prep-time countdown and courier search for a
+scheduled order — immediately, or closer to the requested time? How
+should scheduled orders compete with on-demand orders for the same
+courier pool during a busy window? What happens if the restaurant can't
+actually confirm capacity for that future slot (already fully booked at
+7:00pm)?
+
+<details>
+<summary>Reference approach (click to reveal)</summary>
+
+- **When to start the countdown**: a scheduled order should sit in a
+  `scheduled` state, invisible to the matching service, until a
+  scheduler/cron-style trigger promotes it to the normal `placed` →
+  prep-time-estimate flow at `requested_time − restaurant's typical prep
+  time − buffer` — effectively re-entering the same pipeline this lesson
+  already built, just with a delayed start rather than a new pipeline.
+- **Competing for the courier pool**: don't give scheduled orders their
+  own separate matching path — feeding them into the same
+  `ready_soon` event at the right moment means they compete fairly
+  through the existing batch-window solver, alongside genuinely on-demand
+  orders arriving at the same moment. The one addition needed: the
+  matching service should be able to see a short lookahead window of
+  upcoming scheduled `ready_soon` events (not just what's ready *right
+  now*) so it can hold a courier for an imminent scheduled order instead
+  of sending them across town on an on-demand trip 2 minutes before the
+  scheduled one needs them.
+- **Restaurant capacity for a future slot**: extend the restaurant
+  availability/capacity signal (covered in this lesson's deep dive) with
+  a capacity check *at the requested future time*, not just current
+  queue depth — a restaurant accepts or rejects the scheduled slot at
+  order time, the same accept/reject step that already exists for
+  on-demand orders, just evaluated against a projected future queue
+  instead of the current one.
+- **Failure mode to call out explicitly**: a scheduled order whose
+  promotion trigger fires but finds the restaurant now closed or
+  incapable (unexpected closure, no capacity) needs the same
+  rejection-and-refund path this lesson already built for on-demand
+  rejection — reusing the existing mechanism rather than building a
+  second one.
+
+</details>
+
+<Rubric
+  items={[
+    "Explained when a scheduled order actually enters the matching pipeline, rather than assuming it's matched immediately at placement",
+    "Reused the existing ready_soon / offer-accept matching flow rather than designing a separate parallel system for scheduled orders",
+    "Addressed how scheduled and on-demand orders share (and can conflict over) the same courier pool",
+    "Extended the restaurant capacity signal to check availability at a future requested time, not just current load",
+    "Named the failure path for a scheduled order the restaurant can no longer fulfill, and connected it to the existing rejection/refund mechanism instead of inventing a new one",
+  ]}
+/>

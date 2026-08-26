@@ -42,131 +42,131 @@ database and don't trust each other's clocks.
 
 ### Functional Requirements
 
-- [ ] Browse/search restaurants by location, cuisine, and availability
-- [ ] View a restaurant's menu and place an order (cart → checkout)
-- [ ] Restaurant receives the order and can accept or reject it, then
+- [x] Browse/search restaurants by location, cuisine, and availability
+- [x] View a restaurant's menu and place an order (cart → checkout)
+- [x] Restaurant receives the order and can accept or reject it, then
       marks prep progress (received → preparing → ready for pickup)
-- [ ] System matches the order to an available courier and offers the
+- [x] System matches the order to an available courier and offers the
       assignment (accept/decline with timeout)
-- [ ] Courier picks up the order and delivers it; live location is
+- [x] Courier picks up the order and delivers it; live location is
       visible to the customer throughout
-- [ ] Order delivery is confirmed (customer or courier marks complete)
-- [ ] Cancellation path for customer, restaurant, or courier, at the
+- [x] Order delivery is confirmed (customer or courier marks complete)
+- [x] Cancellation path for customer, restaurant, or courier, at the
       lifecycle stages where each is actually allowed to cancel
 
 ### Non-Functional Requirements
 
-- [ ] Matching latency: courier assigned within a few seconds of an order
+- [x] Matching latency: courier assigned within a few seconds of an order
       being marked ready-soon, not after the food is already cold
-- [ ] Location-update throughput: tens of thousands of courier GPS pings
+- [x] Location-update throughput: tens of thousands of courier GPS pings
       per second citywide during peak, delivered to trackers with low
       (~seconds) end-to-end latency
-- [ ] ETA accuracy expectations: a live countdown that's usefully close
+- [x] ETA accuracy expectations: a live countdown that's usefully close
       (not necessarily exact) and recalculates smoothly rather than
       jumping, as conditions change
-- [ ] High availability during meal-time peaks/surge (lunch and dinner
+- [x] High availability during meal-time peaks/surge (lunch and dinner
       rushes are 5-10x baseline order volume, not steady-state load)
-- [ ] Eventual consistency across the three parties' views of one order
+- [x] Eventual consistency across the three parties' views of one order
       is acceptable (a few seconds of staleness on "restaurant sees the
       order" is fine) — this is explicitly not a strict-consistency
       problem the way seat inventory is
 
 ### Explicitly Out of Scope
 
-- [ ] Restaurant menu/inventory management internals (item availability
+- [x] Restaurant menu/inventory management internals (item availability
       toggles, stock sync) — treated as an existing upstream system
-- [ ] Payment authorization/settlement details, refund policy
-- [ ] Courier onboarding, background checks, pay/incentive structure
-- [ ] Recommendation/search ranking (which restaurants surface first)
-- [ ] In-app chat between customer/courier
+- [x] Payment authorization/settlement details, refund policy
+- [x] Courier onboarding, background checks, pay/incentive structure
+- [x] Recommendation/search ranking (which restaurants surface first)
+- [x] In-app chat between customer/courier
 
 ## HLD Checklist (`hld.mdx`)
 
 ### 1. Problem framing
 
-- [ ] Frame the defining challenge: coordinating three independent
+- [x] Frame the defining challenge: coordinating three independent
       parties (customer, restaurant, courier) around one order, where
       the restaurant's prep time is a real-world production step the
       system can only estimate, not control
-- [ ] Name this as a three-sided marketplace explicitly, contrasted with
+- [x] Name this as a three-sided marketplace explicitly, contrasted with
       Ride-Sharing's two-sided (rider/driver) marketplace — the third
       side (restaurant) is what makes matching timing-dependent rather
       than instant
 
 ### 2. Requirements & capacity estimate
 
-- [ ] Reference the functional/non-functional requirements above
-- [ ] Back-of-envelope math: orders/sec citywide at peak, courier
+- [x] Reference the functional/non-functional requirements above
+- [x] Back-of-envelope math: orders/sec citywide at peak, courier
       location-ping rate (pings/courier/interval × active couriers),
       fan-out reads per order (customer + restaurant + courier all
       polling/subscribing to the same order's state)
 
 ### 3. Core content — architecture diagrams (5+, one concern each)
 
-- [ ] Diagram 1: three-sided marketplace overview — customer app,
+- [x] Diagram 1: three-sided marketplace overview — customer app,
       restaurant app/POS integration, courier app, and the platform
       services connecting them
-- [ ] Diagram 2: order-placement path — client → API gateway → order
+- [x] Diagram 2: order-placement path — client → API gateway → order
       service → restaurant notification → payment
-- [ ] Diagram 3: matching/dispatch path — order-ready signal → matching
+- [x] Diagram 3: matching/dispatch path — order-ready signal → matching
       service → courier candidate pool → offer/accept
-- [ ] Diagram 4: live-tracking data path — courier app → location
+- [x] Diagram 4: live-tracking data path — courier app → location
       ingestion → geo store/cache → fan-out to subscribed customer
       clients (WebSocket/SSE/polling)
-- [ ] Diagram 5: event backbone — Kafka/queue decoupling order-state
+- [x] Diagram 5: event backbone — Kafka/queue decoupling order-state
       changes from matching, tracking, and notification consumers, so
       each scales/fails independently
 
 ### 4. Core content — deep dives (each with 2-3 real-interview branches)
 
-- [ ] **Courier-order matching**: name multiple real strategies, not just
+- [x] **Courier-order matching**: name multiple real strategies, not just
       "assign nearest courier" — greedy nearest-available assignment vs.
       batch-window assignment (collect a few seconds of candidate
       orders/couriers, then solve an optimal assignment) vs. an
       offer/accept model with per-courier timeout and re-offer on decline
-- [ ] **Order batching**: a single courier carrying multiple orders —
+- [x] **Order batching**: a single courier carrying multiple orders —
       same-restaurant batching (two orders from one restaurant, one trip)
       vs. route-batching (multiple restaurants near each other, one
       courier loop) vs. why batching trades delivery speed for courier
       utilization/cost, and when the matching service should *not* batch
       (perishable/hot food, tight promised-ETA orders)
-- [ ] **Live location tracking**: push model (courier streams GPS via
+- [x] **Live location tracking**: push model (courier streams GPS via
       WebSocket) vs. poll model, geo-indexing choice (Redis geospatial
       vs. quadtree/H3 grid) for "which couriers are near this restaurant"
       — link to Ride-Sharing's matching-lesson treatment of the same
       geo-index primitive rather than re-deriving it, and add what's new
       here: fan-out of one courier's location to N subscribed customers
-- [ ] **ETA prediction**: framed as a pipeline of estimates, not one
+- [x] **ETA prediction**: framed as a pipeline of estimates, not one
       number — kitchen prep-time estimate, courier-to-restaurant time,
       restaurant-to-customer time, each with its own model/heuristic and
       its own error bar; why ETAs are recalculated periodically rather
       than computed once at order time (traffic, kitchen delay, courier
       detour)
-- [ ] **Order lifecycle fan-out / notification**: how customer,
+- [x] **Order lifecycle fan-out / notification**: how customer,
       restaurant, and courier apps each see order-state updates without
       polling a shared database — event-driven push per state transition,
       contrasted with Ticketmaster's saga (this system has no
       single-writer transaction coordinating the three parties)
-- [ ] **Restaurant availability & capacity signal**: how the system knows
+- [x] **Restaurant availability & capacity signal**: how the system knows
       a restaurant can/can't take new orders right now (manual toggle vs.
       order-queue-depth-based auto-throttle) — brief, since inventory
       internals are out of scope, but the *signal* feeding matching isn't
 
 ### 5. Trade-offs
 
-- [ ] Greedy nearest-courier assignment vs. batch-window optimal
+- [x] Greedy nearest-courier assignment vs. batch-window optimal
       assignment: latency vs. overall efficiency/fairness
-- [ ] Push (WebSocket/SSE) vs. poll for live tracking: server cost/
+- [x] Push (WebSocket/SSE) vs. poll for live tracking: server cost/
       complexity vs. staleness
-- [ ] Single-order-per-trip vs. batching: delivery speed vs. courier
+- [x] Single-order-per-trip vs. batching: delivery speed vs. courier
       utilization and per-order cost
-- [ ] Strong per-order consistency vs. eventual consistency across the
+- [x] Strong per-order consistency vs. eventual consistency across the
       three parties' views — why this system chooses eventual (unlike
       Ticketmaster's seat-inventory writes)
 
 ### 6. Worked example
 
-- [ ] Sequence diagram tracing one order end-to-end: customer places
+- [x] Sequence diagram tracing one order end-to-end: customer places
       order → restaurant accepts → prep-time estimate feeds matching →
       courier offered and accepts → pickup → live tracking updates →
       delivery confirmed — naming which service emits which event at
@@ -174,21 +174,21 @@ database and don't trust each other's clocks.
 
 ### 7. Interview angle
 
-- [ ] Follow-up: courier declines the offer / times out — re-offer logic
-- [ ] Follow-up: restaurant rejects the order after payment — refund/
+- [x] Follow-up: courier declines the offer / times out — re-offer logic
+- [x] Follow-up: restaurant rejects the order after payment — refund/
       re-route implications (kept at the shape level; refund policy
       itself stays out of scope per this checklist)
-- [ ] Follow-up: courier goes offline mid-delivery — detection and
+- [x] Follow-up: courier goes offline mid-delivery — detection and
       customer-facing fallback
-- [ ] Follow-up: scale the matching service across cities — why matching
+- [x] Follow-up: scale the matching service across cities — why matching
       is naturally geo-partitioned (a courier in Berlin never competes
       for an order in Manila)
 
 ### 8. Practice & Self-Check
 
-- [ ] Recap quiz covering: three-sided marketplace framing, batching
+- [x] Recap quiz covering: three-sided marketplace framing, batching
       strategies, ETA pipeline stages, push vs. poll tracking, eventual
       consistency reasoning
-- [ ] Open design challenge: "extend the matching service to support
+- [x] Open design challenge: "extend the matching service to support
       scheduled orders (deliver at a specific future time) alongside
       on-demand orders" — with rubric
