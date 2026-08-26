@@ -13,8 +13,6 @@ shut, and hand the courier a way to prove deposit happened. Later, a
 customer walks up with a code. The station has to prove that code opens
 the one compartment it was issued for, and only that one, and only once.
 
-Three actors touch this station:
-
 - **Courier** — deposits a package, needs the right size compartment and
   a receipt that a deposit happened.
 - **Customer** — retrieves a package with a code, needs a clear
@@ -40,8 +38,6 @@ an extension rather than building out.
 
 ## Requirements at the object level
 
-Three operations, stated precisely enough to drive class design:
-
 - **`depositPackage(size, courierId)`** — given a package size, find an
   `AVAILABLE` compartment of that exact size, mark it occupied, generate
   a unique access code tied to that compartment and that package, return
@@ -55,13 +51,22 @@ Three operations, stated precisely enough to drive class design:
   force them open.
 
 Non-functional requirements that shape the classes, not just the
-behavior: compartment state changes must be **thread-safe at the
-per-compartment level** (two couriers should never both win a reserve on
-the same slot), code lookup should be close to O(1) even as the number
-of issued tokens grows, and the size-matching and assignment logic
-should be swappable without touching the deposit workflow — a new
-compartment size or a smarter assignment rule shouldn't mean rewriting
-`depositPackage()`.
+behavior:
+
+- Compartment state changes must be **thread-safe at the per-compartment
+  level** — two couriers should never both win a reserve on the same
+  slot.
+- Code lookup should be close to O(1) even as the number of issued
+  tokens grows.
+- The size-matching and assignment logic should be swappable without
+  touching the deposit workflow — a new compartment size or a smarter
+  assignment rule shouldn't mean rewriting `depositPackage()`.
+
+<KeyStat
+  value="30–150"
+  label="compartments per station"
+  detail="Per the network-level breakdown in the HLD lesson, a station's compartment mix runs roughly 40% small / 35% medium / 20% large / 5% oversized. At that size, a linear scan filtered by size and status (see Trade-offs below) stays fast enough that an indexed available-queue isn't worth the added bookkeeping."
+/>
 
 ## Core content
 
@@ -83,106 +88,138 @@ exist without a location — composition), while an `AccessToken`
 (association) — the token can expire and disappear without deleting the
 compartment underneath it.
 
-<DiagramPanel title="Amazon Locker — object model" type="class">
-```mermaid
-classDiagram
-    class LockerLocation {
-        +locationId: String
-        +address: String
-        +status: LocationStatus
-        -compartments: List~Compartment~
-        -tokensByCode: Map~String, AccessToken~
-        +findAvailableCompartment(size) Compartment
-        +registerToken(token: AccessToken)
-        +openExpiredCompartments() List~Compartment~
-    }
-    class Compartment {
-        +compartmentId: String
-        +size: Size
-        -status: CompartmentStatus
-        -currentPackageId: String
-        +reserve()
-        +confirmDeposit(packageId)
-        +unlock()
-        +release()
-        +isAvailable() Boolean
-    }
-    class Package {
-        +packageId: String
-        +size: Size
-        +customerId: String
-        +orderId: String
-        -status: PackageStatus
-        +depositedAt: DateTime
-        +expiresAt: DateTime
-    }
-    class AccessToken {
-        +code: String
-        +compartmentId: String
-        +packageId: String
-        -status: TokenStatus
-        +createdAt: DateTime
-        +expiresAt: DateTime
-        +isExpired() Boolean
-        +consume()
-    }
-    class Reservation {
-        +reservationId: String
-        +orderId: String
-        +locationId: String
-        +size: Size
-        +expiresAt: DateTime
-    }
-    class Order {
-        +orderId: String
-        +customerId: String
-        -packages: List~Package~
-        +destinationLocationId: String
-    }
-    class Customer {
-        +customerId: String
-        +name: String
-        +contact: String
-    }
-    class DeliveryAgent {
-        +agentId: String
-        +carrier: String
-    }
-    class LockerService {
-        +reserveCompartment(orderId, size) Reservation
-        +depositPackage(agentId, packageId, size) AccessToken
-        +pickup(code) Package
-        +openExpiredCompartments() List~Compartment~
-    }
+The class diagram is split into two, on purpose: the core domain
+(occupancy and token bookkeeping) is one concern, and how the outside
+world reaches that domain (orders, customers, the facade) is another.
 
-    LockerLocation "1" o-- "*" Compartment : aggregates
-    LockerLocation "1" o-- "*" AccessToken : indexes by code
-    AccessToken "1" --> "1" Compartment : unlocks
-    AccessToken "1" --> "1" Package : maps to
-    Compartment "1" --> "0..1" Package : currently holds
-    Order "1" *-- "*" Package : composes
-    Customer "1" --> "*" Order : places
-    Reservation "1" --> "1" Order : reserved for
-    Reservation "1" --> "1" LockerLocation : at
-    LockerService ..> LockerLocation : coordinates
-    DeliveryAgent ..> LockerService : uses
-    Customer ..> LockerService : uses
-```
-</DiagramPanel>
+<D2Diagram title="Amazon Locker — core locker domain" type="class" chart={`
+direction: right
+
+LockerLocation: {
+  shape: class
+  +locationId: String
+  +address: String
+  +status: LocationStatus
+  -compartments: Compartment list
+  -tokensByCode: code-to-token map
+  +findAvailableCompartment(size): Compartment
+  +registerToken(token): void
+  +openExpiredCompartments(): Compartment list
+}
+
+Compartment: {
+  shape: class
+  +compartmentId: String
+  +size: Size
+  -status: CompartmentStatus
+  -currentPackageId: String
+  +reserve(): void
+  +confirmDeposit(packageId): void
+  +unlock(): void
+  +release(): void
+  +isAvailable(): Boolean
+}
+
+Package: {
+  shape: class
+  +packageId: String
+  +size: Size
+  +customerId: String
+  +orderId: String
+  -status: PackageStatus
+  +depositedAt: DateTime
+  +expiresAt: DateTime
+}
+
+AccessToken: {
+  shape: class
+  +code: String
+  +compartmentId: String
+  +packageId: String
+  -status: TokenStatus
+  +createdAt: DateTime
+  +expiresAt: DateTime
+  +isExpired(): Boolean
+  +consume(): void
+}
+
+LockerLocation -> Compartment: aggregates (1 -> *)
+LockerLocation -> AccessToken: indexes by code (1 -> *)
+AccessToken -> Compartment: unlocks (1 -> 1)
+AccessToken -> Package: maps to (1 -> 1)
+Compartment -> Package: currently holds (1 -> 0..1)
+`} />
 
 `LockerLocation` is the aggregate root: every operation on a
 `Compartment` or `AccessToken` goes through it (or through
 `LockerService`, which delegates to it), so nothing outside this station
-mutates a compartment directly. `Reservation` is optional — it exists to
-support "reserve a slot before the courier physically arrives," e.g. an
-e-commerce order that wants to guarantee capacity at checkout time; a
-walk-up courier with no prior reservation skips straight to
-`depositPackage()`.
+mutates a compartment directly.
 
 <QuizItem
   question="Why does AccessToken reference exactly one Compartment and one Package — a single field each, not a list?"
   answer="Because the invariant is 1:1: one active code opens exactly one compartment holding exactly one package. Modeling the reference as a single field (not a collection) makes that invariant impossible to violate in the type itself, rather than merely true by convention that calling code has to maintain."
 />
+
+<D2Diagram title="Amazon Locker — order/customer integration context" type="class" chart={`
+direction: right
+
+Order: {
+  shape: class
+  +orderId: String
+  +customerId: String
+  -packages: Package list
+  +destinationLocationId: String
+}
+
+Customer: {
+  shape: class
+  +customerId: String
+  +name: String
+  +contact: String
+}
+
+DeliveryAgent: {
+  shape: class
+  +agentId: String
+  +carrier: String
+}
+
+Reservation: {
+  shape: class
+  +reservationId: String
+  +orderId: String
+  +locationId: String
+  +size: Size
+  +expiresAt: DateTime
+}
+
+LockerService: {
+  shape: class
+  +reserveCompartment(orderId, size): Reservation
+  +depositPackage(agentId, packageId, size): AccessToken
+  +pickup(code): Package
+  +openExpiredCompartments(): Compartment list
+}
+
+Package: {shape: class}
+LockerLocation: {shape: class}
+
+Order -> Package: composes (1 -> *)
+Customer -> Order: places (1 -> *)
+Reservation -> Order: reserved for (1 -> 1)
+Reservation -> LockerLocation: at (1 -> 1)
+LockerService -> LockerLocation: coordinates
+DeliveryAgent -> LockerService: uses
+Customer -> LockerService: uses
+`} />
+
+`Package` and `LockerLocation` reappear here as thin references back to
+the core-domain diagram above — this panel is about who reaches the
+station and how, not a second copy of their fields. `Reservation` is
+optional — it exists to support "reserve a slot before the courier
+physically arrives," e.g. an e-commerce order that wants to guarantee
+capacity at checkout time; a walk-up courier with no prior reservation
+skips straight to `depositPackage()`.
 
 ### State machines
 
@@ -195,49 +232,47 @@ and sequence diagrams) is the right tool because each one has more than
 one way to leave its current state — the diagram forces you to draw
 every exit, not just the happy one.
 
-<DiagramPanel title="Compartment lifecycle" type="state">
-```mermaid
-stateDiagram-v2
-    [*] --> AVAILABLE
-    AVAILABLE --> RESERVED : reserveCompartment()
-    RESERVED --> AVAILABLE : reservation window expires
-    RESERVED --> OCCUPIED : confirmDeposit()
-    AVAILABLE --> OCCUPIED : confirmDeposit() (walk-up, no reservation)
-    OCCUPIED --> AVAILABLE : pickup() succeeds
-    OCCUPIED --> AVAILABLE : staff sweep opens expired compartment
-    AVAILABLE --> OUT_OF_SERVICE : staff flags a fault
-    OUT_OF_SERVICE --> AVAILABLE : staff clears the fault
-```
-</DiagramPanel>
+<D2Diagram title="Compartment lifecycle" type="state" chart={`
+direction: right
+lifecycle_start: {shape: circle; width: 24; height: 24; label: ""}
+lifecycle_start -> AVAILABLE
+AVAILABLE -> RESERVED: reserveCompartment()
+RESERVED -> AVAILABLE: reservation window expires
+RESERVED -> OCCUPIED: confirmDeposit()
+AVAILABLE -> OCCUPIED: confirmDeposit() (walk-up, no reservation)
+OCCUPIED -> AVAILABLE: pickup() succeeds
+OCCUPIED -> AVAILABLE: staff sweep opens expired compartment
+AVAILABLE -> OUT_OF_SERVICE: staff flags a fault
+OUT_OF_SERVICE -> AVAILABLE: staff clears the fault
+`} />
 
-<DiagramPanel title="Package lifecycle" type="state">
-```mermaid
-stateDiagram-v2
-    [*] --> IN_TRANSIT
-    IN_TRANSIT --> DEPOSITED : courier confirms deposit
-    DEPOSITED --> PICKED_UP : customer enters a valid, unexpired code
-    DEPOSITED --> EXPIRED : pickup window elapses unclaimed
-    EXPIRED --> RETURNED_TO_SENDER : staff sweep / carrier collects
-    PICKED_UP --> [*]
-    RETURNED_TO_SENDER --> [*]
-```
-</DiagramPanel>
+<D2Diagram title="Package lifecycle" type="state" chart={`
+direction: right
+lifecycle_start: {shape: circle; width: 24; height: 24; label: ""}
+lifecycle_end: {shape: circle; width: 16; height: 16; label: ""}
+lifecycle_start -> IN_TRANSIT
+IN_TRANSIT -> DEPOSITED: courier confirms deposit
+DEPOSITED -> PICKED_UP: customer enters a valid, unexpired code
+DEPOSITED -> EXPIRED: pickup window elapses unclaimed
+EXPIRED -> RETURNED_TO_SENDER: staff sweep / carrier collects
+PICKED_UP -> lifecycle_end
+RETURNED_TO_SENDER -> lifecycle_end
+`} />
 
-<DiagramPanel title="AccessToken lifecycle" type="state">
-```mermaid
-stateDiagram-v2
-    [*] --> ACTIVE : generateAccessToken()
-    ACTIVE --> CONSUMED : pickup() with the correct code
-    ACTIVE --> EXPIRED : expiresAt elapses
-    CONSUMED --> [*]
-    note right of EXPIRED
-        Row stays in the code -> token
-        map. Deleting it would make an
-        expired code look identical to
-        a code that never existed.
-    end note
-```
-</DiagramPanel>
+<D2Diagram title="AccessToken lifecycle" type="state" chart={`
+direction: right
+lifecycle_start: {shape: circle; width: 24; height: 24; label: ""}
+lifecycle_end: {shape: circle; width: 16; height: 16; label: ""}
+lifecycle_start -> ACTIVE: generateAccessToken()
+ACTIVE -> CONSUMED: pickup() with the correct code
+ACTIVE -> EXPIRED: expiresAt elapses
+CONSUMED -> lifecycle_end
+EXPIRED_note: "Row stays in the code -> token map.\\nDeleting it would make an expired code\\nlook identical to a code that never existed." {
+  shape: text
+  style.font-size: 14
+}
+EXPIRED -> EXPIRED_note: {style.stroke-dash: 3}
+`} />
 
 The nuance worth calling out explicitly: an `EXPIRED` token is not
 deleted. `pickup("771102")` for a code that expired yesterday still
@@ -269,12 +304,42 @@ pattern) do real work in this design rather than being decoration:
   enforce legal transitions, instead of a loose `boolean isOccupied`
   flag plus `if/else` checks scattered across the codebase. The state
   diagram above *is* this pattern's contract.
-- **Strategy** — compartment assignment (exact-size-match only, today) is
-  swapped in behind a `CompartmentAssignmentStrategy` interface rather
-  than hard-coded inside `depositPackage()`. Notification-channel
-  selection (SMS vs push vs email) is a second natural fit for the same
-  pattern, even though the notification internals themselves are out of
-  scope here.
+- **Strategy** — compartment assignment is swapped in behind a
+  `CompartmentAssignmentStrategy` interface rather than hard-coded
+  inside `depositPackage()`. This is a real interview branch point, not
+  a single rule — three concrete implementations of the same interface:
+
+<CompareTable
+  title="CompartmentAssignmentStrategy — concrete strategies"
+  rows={[
+    {
+      approach: "Exact-size-match",
+      pros: [
+        "The invariant 'a MEDIUM package is always in a MEDIUM compartment' is trivial to state and audit",
+        "No cross-size accounting needed for capacity reporting or billing",
+      ],
+      cons: ["Utilization drops when one size class is full while a larger size sits empty"],
+      chosenBecause: "Simplicity and a clean invariant matter more than utilization at single-station scale (30-150 compartments).",
+    },
+    {
+      approach: "Best-fit fallback",
+      pros: ["Improves utilization: a MEDIUM package can still be placed when only LARGE slots are free"],
+      cons: ["Compartment size no longer implies package size, complicating any later reporting or billing that assumes they match"],
+    },
+    {
+      approach: "Reserved sub-pool split",
+      pros: ["Protects walk-up courier capacity from being starved by a surge of pre-reserved orders, or vice versa"],
+      cons: ["Splits one pool into two, so each sub-pool alone has less slack and can hit 'no capacity' sooner"],
+    },
+  ]}
+/>
+
+Notification-channel selection (SMS vs push vs email) is a second,
+independent application of the same pattern, even though the
+notification internals themselves are out of scope here.
+
+Two more patterns round out the picture:
+
 - **Facade** — `LockerService` is the single entry point for couriers and
   customers. It hides the multi-step choreography (`reserve()` ->
   physical deposit -> `confirmDeposit()` -> `generateAccessToken()` ->
@@ -320,55 +385,60 @@ addition — `access_log` — that exists purely for audit and dispute
 resolution ("the customer says the compartment was empty when they
 opened it") and has no corresponding in-memory class.
 
-<DiagramPanel title="Amazon Locker — single-station schema" type="er">
-```mermaid
-erDiagram
-    LOCKER_LOCATIONS ||--o{ COMPARTMENTS : contains
-    COMPARTMENTS |o--o| PACKAGES : currently_holds
-    CUSTOMERS ||--o{ PACKAGES : owns
-    PACKAGES ||--o| ACCESS_TOKENS : has
-    COMPARTMENTS ||--o{ ACCESS_LOG : logs
+<D2Diagram title="Amazon Locker — single-station schema" type="er" chart={`
+direction: right
 
-    LOCKER_LOCATIONS {
-        string location_id PK
-        float latitude
-        float longitude
-        string status
-    }
-    COMPARTMENTS {
-        string slot_id PK
-        string location_id FK
-        string size
-        string status
-    }
-    PACKAGES {
-        string package_id PK
-        string compartment_id FK
-        string customer_id FK
-        string status
-        datetime deposited_at
-        datetime expires_at
-    }
-    ACCESS_TOKENS {
-        string code PK
-        string package_id FK
-        datetime expiration
-        datetime used_at
-    }
-    ACCESS_LOG {
-        string log_id PK
-        string actor
-        string action
-        string compartment_id FK
-        datetime timestamp
-    }
-    CUSTOMERS {
-        string customer_id PK
-        string name
-        string contact
-    }
-```
-</DiagramPanel>
+LOCKER_LOCATIONS: {
+  shape: sql_table
+  location_id: string {constraint: primary_key}
+  latitude: float
+  longitude: float
+  status: string
+}
+COMPARTMENTS: {
+  shape: sql_table
+  slot_id: string {constraint: primary_key}
+  location_id: string {constraint: foreign_key}
+  size: string
+  status: string
+}
+PACKAGES: {
+  shape: sql_table
+  package_id: string {constraint: primary_key}
+  compartment_id: string {constraint: foreign_key}
+  customer_id: string {constraint: foreign_key}
+  status: string
+  deposited_at: datetime
+  expires_at: datetime
+}
+ACCESS_TOKENS: {
+  shape: sql_table
+  code: string {constraint: primary_key}
+  package_id: string {constraint: foreign_key}
+  expiration: datetime
+  used_at: datetime
+}
+ACCESS_LOG: {
+  shape: sql_table
+  log_id: string {constraint: primary_key}
+  actor: string
+  action: string
+  compartment_id: string {constraint: foreign_key}
+  timestamp: datetime
+}
+CUSTOMERS: {
+  shape: sql_table
+  customer_id: string {constraint: primary_key}
+  name: string
+  contact: string
+}
+
+LOCKER_LOCATIONS.location_id -> COMPARTMENTS.location_id: contains
+COMPARTMENTS.slot_id -> PACKAGES.compartment_id: currently holds
+CUSTOMERS.customer_id -> PACKAGES.customer_id: owns
+PACKAGES.package_id -> ACCESS_TOKENS.package_id: has
+COMPARTMENTS.slot_id -> ACCESS_LOG.compartment_id: logs
+`} />
 
 Indexing follows the three queries this station actually runs under
 load:
@@ -419,6 +489,39 @@ map keeps them: staff sweeps and dispute resolution both need to query
   simpler storage-wise (no unbounded growth of dead tokens) but loses
   both of those — an expired code and a fake code become
   indistinguishable, and there's nothing left to sweep.
+
+That cleanup-timing choice is about *when a row disappears*. A separate,
+often-conflated question is *how the system notices a token has expired
+in the first place* — three real mechanisms, not one:
+
+<CompareTable
+  title="Token-expiry detection mechanism"
+  rows={[
+    {
+      approach: "Lazy check-on-read",
+      pros: [
+        "No background process to build, schedule, or monitor",
+        "isExpired() is a pure comparison against expiresAt, evaluated only when something actually looks at the token",
+      ],
+      cons: ["A token that's expired but never looked up stays ACTIVE in the map until something reads it"],
+      chosenBecause: "openExpiredCompartments() already does the enumeration staff need — a background pass would duplicate that work.",
+    },
+    {
+      approach: "Active background sweep",
+      pros: ["Catches expired tokens proactively, even if nothing ever reads them"],
+      cons: ["Adds a scheduled job to build, run, and monitor for a single-station design that doesn't otherwise need one"],
+    },
+    {
+      approach: "Hard delete on expiry",
+      pros: ["Bounded storage — no accumulation of dead tokens"],
+      cons: [
+        "Loses the expired-vs-never-existed distinction the whole design depends on",
+        "openExpiredCompartments() has nothing left to enumerate",
+      ],
+    },
+  ]}
+/>
+
 - **Compartment lookup: O(n) linear scan over all compartments at a
   location vs. an indexed available-queue per size.** At single-station
   scale — 30 to 150 compartments — a linear scan filtered by size and
@@ -428,14 +531,39 @@ map keeps them: staff sweeps and dispute resolution both need to query
   compartments' actual status are two structures that must be kept in
   sync on every reserve/release — the same drift risk as the previous
   trade-off, just moved one level down.
-- **Locking granularity: a lock per compartment (chosen here) vs. one
-  lock for the whole `LockerLocation` aggregate.** Per-compartment
-  locking lets two couriers depositing into two different compartments
-  proceed fully in parallel — only two operations racing for the *same*
-  compartment ever block each other. A single aggregate-wide lock is
-  simpler to reason about (one lock, no risk of forgetting to acquire
-  the right one) but serializes every operation at the station, even
-  ones touching unrelated compartments.
+
+Locking granularity has the same "two options isn't the whole story"
+shape as token-expiry detection above — a third, lock-free option is a
+real branch interviewers push on once the first two are on the table:
+
+<CompareTable
+  title="Concurrency-control mechanism for Compartment state changes"
+  rows={[
+    {
+      approach: "Per-compartment pessimistic lock",
+      pros: [
+        "Two operations on two different compartments run fully in parallel",
+        "Simple mental model: acquire the one lock that matters, nothing else blocks",
+      ],
+      cons: ["Still serializes the rare case of two operations racing for the exact same compartment"],
+      chosenBecause: "Contention is naturally scoped to one compartment at a time, so lock scope should match it.",
+    },
+    {
+      approach: "Single aggregate-wide lock",
+      pros: ["One lock to reason about — no risk of acquiring the wrong one"],
+      cons: ["Serializes every operation at the station, even ones touching unrelated compartments"],
+    },
+    {
+      approach: "Optimistic concurrency (version column + CAS)",
+      pros: ["No blocking at all under low contention"],
+      cons: [
+        "The caller must detect and retry a failed compare-and-swap",
+        "Only pays off when same-compartment contention is rare — otherwise retries pile up",
+      ],
+    },
+  ]}
+/>
+
 - **Size-matching strictness: strict exact-match (chosen here) vs.
   fallback to the next larger compartment.** Strict matching keeps the
   invariant "a `MEDIUM` package is always in a `MEDIUM` compartment"
@@ -443,55 +571,65 @@ map keeps them: staff sweeps and dispute resolution both need to query
   utilization when, say, all `MEDIUM` slots are full but a `LARGE` one
   sits empty — at the cost of `Compartment` no longer implying a package
   size, which complicates any later reporting or billing that assumes
-  compartment size and package size are the same thing.
+  compartment size and package size are the same thing. (This is the
+  same trade-off as the `CompartmentAssignmentStrategy` comparison
+  above, restated as a chosen-vs-alternative pair.)
 
 ## Worked example
 
 Trace a single package through deposit, a failed pickup attempt, a
 successful pickup, and — as a contrasting branch — a package nobody ever
-collects.
+collects. Three focused diagrams, one per concern, instead of one
+diagram carrying the whole trace.
 
-<DiagramPanel title="Deposit, wrong code, correct code" type="sequence">
-```mermaid
-sequenceDiagram
-    actor Courier
-    participant LockerService
-    participant LockerLocation
-    participant CompartmentC14 as Compartment C-14 (medium)
-    participant AccessToken
-    participant NotificationService
-    actor Customer
+<D2Diagram title="Deposit" type="sequence" chart={`
+shape: sequence_diagram
 
-    Courier->>LockerService: depositPackage(size=MEDIUM)
-    LockerService->>LockerLocation: findAvailableCompartment(MEDIUM)
-    LockerLocation-->>LockerService: Compartment C-14
-    LockerService->>CompartmentC14: reserve()
-    Note over CompartmentC14: AVAILABLE -> RESERVED
-    CompartmentC14-->>Courier: door C-14 unlocks
-    Courier->>CompartmentC14: places package inside
-    Courier->>LockerService: confirmDeposit(C-14, packageId)
-    LockerService->>CompartmentC14: confirmDeposit(packageId)
-    Note over CompartmentC14: RESERVED -> OCCUPIED
-    LockerService->>AccessToken: generateAccessToken(C-14, packageId)
-    AccessToken-->>LockerService: code "483921", expires in 3 days
-    LockerService->>NotificationService: notify(customer, code)
-    NotificationService-->>Customer: "Package ready. Code: 483921"
+Courier: {style.fill: "#3b6fd6"; style.font-color: "#ffffff"}
+LockerService: {style.fill: "#0e7c86"; style.font-color: "#ffffff"}
+LockerLocation: {style.fill: "#0e7c86"; style.font-color: "#ffffff"}
+CompartmentC14: "Compartment C-14 (medium)"
+AccessToken
+NotificationService: {style.fill: "#0e7c86"; style.font-color: "#ffffff"}
+Customer: {style.fill: "#3b6fd6"; style.font-color: "#ffffff"}
 
-    Note over Customer: two days later
-    Customer->>LockerService: pickup(code="483920")
-    LockerService-->>Customer: error INVALID_CODE (no compartment state change)
+Courier -> LockerService: depositPackage(size=MEDIUM)
+LockerService -> LockerLocation: findAvailableCompartment(MEDIUM)
+LockerLocation -> LockerService: Compartment C-14
+LockerService -> CompartmentC14: reserve()
+CompartmentC14 -> CompartmentC14: note -- AVAILABLE -> RESERVED
+CompartmentC14 -> Courier: door C-14 unlocks
+Courier -> CompartmentC14: places package inside
+Courier -> LockerService: confirmDeposit(C-14, packageId)
+LockerService -> CompartmentC14: confirmDeposit(packageId)
+CompartmentC14 -> CompartmentC14: note -- RESERVED -> OCCUPIED
+LockerService -> AccessToken: generateAccessToken(C-14, packageId)
+AccessToken -> LockerService: code "483921", expires in 3 days
+LockerService -> NotificationService: notify(customer, code)
+NotificationService -> Customer: "Package ready. Code: 483921"
+`} />
 
-    Customer->>LockerService: pickup(code="483921")
-    LockerService->>AccessToken: validate("483921")
-    AccessToken-->>LockerService: ACTIVE, not expired
-    LockerService->>CompartmentC14: unlock()
-    CompartmentC14-->>Customer: door opens
-    LockerService->>AccessToken: consume()
-    Note over AccessToken: ACTIVE -> CONSUMED
-    LockerService->>CompartmentC14: release()
-    Note over CompartmentC14: OCCUPIED -> AVAILABLE
-```
-</DiagramPanel>
+<D2Diagram title="Pickup: wrong code, then correct code" type="sequence" chart={`
+shape: sequence_diagram
+
+Customer: {style.fill: "#3b6fd6"; style.font-color: "#ffffff"}
+LockerService: {style.fill: "#0e7c86"; style.font-color: "#ffffff"}
+AccessToken
+CompartmentC14: "Compartment C-14 (medium)"
+
+Customer -> LockerService: pickup(code="483920")
+LockerService -> Customer: error INVALID_CODE (no compartment state change)
+
+Customer -> LockerService: pickup(code="483921")
+LockerService -> AccessToken: validate("483921")
+AccessToken -> LockerService: ACTIVE, not expired
+LockerService -> CompartmentC14: unlock()
+CompartmentC14 -> Customer: door opens
+LockerService -> AccessToken: consume()
+AccessToken -> AccessToken: note -- ACTIVE -> CONSUMED
+LockerService -> CompartmentC14: release()
+CompartmentC14 -> CompartmentC14: note -- OCCUPIED -> AVAILABLE
+`} />
 
 The mistyped code (`483920` instead of `483921`) matters as a design
 point, not just a plot detail: `pickup()` looks the code up in the
@@ -502,26 +640,25 @@ side effects, which is exactly why the lockout-after-failed-attempts
 mechanism is a separate extension rather than baked into `pickup()`
 itself.
 
-<DiagramPanel title="Unclaimed package: expiry and staff sweep" type="sequence">
-```mermaid
-sequenceDiagram
-    actor Staff
-    participant LockerService
-    participant AccessToken as AccessToken (code 771102)
-    participant CompartmentC09 as Compartment C-09 (medium)
+<D2Diagram title="Unclaimed package: expiry and staff sweep" type="sequence" chart={`
+shape: sequence_diagram
 
-    Note over AccessToken: day 3 — expiresAt elapses
-    Note over AccessToken: ACTIVE -> EXPIRED (row stays mapped)
+Staff: {style.fill: "#3b6fd6"; style.font-color: "#ffffff"}
+LockerService: {style.fill: "#0e7c86"; style.font-color: "#ffffff"}
+AccessToken: "AccessToken (code 771102)"
+CompartmentC09: "Compartment C-09 (medium)"
 
-    Staff->>LockerService: openExpiredCompartments()
-    LockerService->>AccessToken: find tokens where status = EXPIRED
-    AccessToken-->>LockerService: [C-09: code 771102]
-    LockerService->>CompartmentC09: unlock()
-    CompartmentC09-->>Staff: door opens, staff removes package
-    LockerService->>CompartmentC09: release()
-    Note over CompartmentC09: OCCUPIED -> AVAILABLE
-```
-</DiagramPanel>
+AccessToken -> AccessToken: note -- day 3, expiresAt elapses
+AccessToken -> AccessToken: note -- ACTIVE -> EXPIRED, row stays mapped
+
+Staff -> LockerService: openExpiredCompartments()
+LockerService -> AccessToken: find tokens where status = EXPIRED
+AccessToken -> LockerService: "found: C-09, code 771102"
+LockerService -> CompartmentC09: unlock()
+CompartmentC09 -> Staff: door opens, staff removes package
+LockerService -> CompartmentC09: release()
+CompartmentC09 -> CompartmentC09: note -- OCCUPIED -> AVAILABLE
+`} />
 
 Contrast the two closing steps: a successful pickup consumes the token
 (`ACTIVE -> CONSUMED`) and releases the compartment in one caller-driven
@@ -652,9 +789,11 @@ logic itself* — a medium return package still needs a medium
 compartment, same rule as delivery. What does need an explicit decision
 is *pool selection*: should returns compete for the same compartment
 pool as deliveries, or draw from a reserved sub-pool so a surge of
-returns can't starve incoming deliveries (or vice versa)? That's a
-second, separate strategy — a `CompartmentPoolStrategy` alongside the
-existing size-matching one — not a variant of the size-matching rule.
+returns can't starve incoming deliveries (or vice versa)? That's exactly
+the reserved-sub-pool-split branch of the `CompartmentAssignmentStrategy`
+comparison above, applied to a real scenario — a second, separate
+strategy (a `CompartmentPoolStrategy` alongside the existing
+size-matching one), not a variant of the size-matching rule.
 
 </details>
 

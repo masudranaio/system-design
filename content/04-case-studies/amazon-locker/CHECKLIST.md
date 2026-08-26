@@ -214,25 +214,26 @@ single-station (LLD) and city-wide-network (HLD) level.
 
 ### 3. Class diagram
 
-- [x] Mermaid class diagram (`classDiagram`) covering
+- [x] **Diagram A — core locker domain** (D2 `shape: class`): covers
       LockerLocation/LockerStation (aggregate root, holds Compartments
-      + accessTokenMapping\<code,AccessToken\> for O(1) lookup)
-- [x] Compartment (id, size, status/occupied, owns its own occupancy
-      state — Information Expert pattern)
-- [x] Package (packageId, size, tracking metadata, lifecycle state)
-- [x] AccessToken/AccessCode (code, expiration, ref to Compartment,
-      owns its own expiration logic)
-- [x] Reservation (optional, between Customer/Order and Locker, for
-      "reserve before courier arrives")
-- [x] Customer, Courier/DeliveryAgent (actors)
-- [x] Order (links Customer + Item/Package list + destination
-      LockerLocation)
-- [x] LockerService (facade exposing depositPackage()/pickup()/
-      openExpiredCompartments())
-- [x] Relationships: LockerLocation aggregates many Compartments
-      (1-to-many), AccessToken references exactly one
-      Compartment/Package (1-to-1), Order composes Items, Customer
-      associated with Orders
+      + accessTokenMapping\<code,AccessToken\> for O(1) lookup),
+      Compartment (id, size, status/occupied, owns its own occupancy
+      state — Information Expert pattern), Package (packageId, size,
+      tracking metadata, lifecycle state), AccessToken/AccessCode
+      (code, expiration, ref to Compartment, owns its own expiration
+      logic), and their relationships (LockerLocation aggregates many
+      Compartments 1-to-many, AccessToken references exactly one
+      Compartment/Package 1-to-1)
+- [x] **Diagram B — order/customer integration context** (D2
+      `shape: class`, split from Diagram A because it's a different
+      concern — how the station is *reached* — from the core domain's
+      own occupancy/token bookkeeping): Reservation (optional, between
+      Customer/Order and Locker, for "reserve before courier arrives"),
+      Customer, Courier/DeliveryAgent (actors), Order (links Customer +
+      Item/Package list + destination LockerLocation), LockerService
+      (facade exposing depositPackage()/pickup()/
+      openExpiredCompartments(), coordinates into Diagram A); Order
+      composes Items, Customer associated with Orders
 
 ### 4. State machines
 
@@ -254,8 +255,15 @@ single-station (LLD) and city-wide-network (HLD) level.
 - [x] State (Compartment status as explicit enum
       AVAILABLE/RESERVED/OCCUPIED/OUT_OF_SERVICE, fits the state
       machine)
-- [x] Strategy (compartment-assignment: exact-size-only vs fallback vs
-      best-fit; notification channel selection)
+- [x] Strategy — compartment-assignment behind a
+      `CompartmentAssignmentStrategy` interface, named as three
+      concrete branches (not a one-line mention): (1) exact-size-match
+      only (chosen for the base design), (2) best-fit fallback to the
+      next larger size when the exact size is full, (3) a reserved
+      sub-pool split (e.g. holding back a fraction of each size for
+      pre-reserved orders vs walk-up couriers); notification-channel
+      selection (SMS vs push vs email) named as a second, independent
+      application of the same pattern
 - [x] Facade (LockerService coordinator hides lock management and
       multi-step workflows)
 - [x] Repository (abstracts persistence for Locker/Package/Customer)
@@ -293,30 +301,49 @@ single-station (LLD) and city-wide-network (HLD) level.
       (simpler queries, drift risk)
 - [x] Expired-token cleanup timing: keep mapped until staff clears vs
       eager delete — distinction vs simplicity
+- [x] Token-expiry *detection* mechanism, named as three branches (not
+      a one-line mention): (1) lazy check-on-read (chosen) —
+      `isExpired()` compares `expiresAt` to now only when `pickup()` or
+      the sweep actually looks at the token, no background process;
+      (2) active background sweep — a scheduled job that proactively
+      flips `ACTIVE -> EXPIRED` on a timer, catching expired tokens
+      even if nothing reads them; (3) hard delete on expiry (rejected
+      — loses the "expired vs never existed" distinction the whole
+      design depends on)
 - [x] Compartment lookup: O(n) linear scan, fine at single-station
       scale, vs indexed available-queue per size — O(1) but two
       structures to keep in sync
-- [x] Locking granularity: per-compartment lock, concurrent ops, vs
-      one lock for whole aggregate, simpler but serializes
+- [x] Concurrency-control mechanism, named as three branches (not a
+      one-line mention): (1) per-compartment pessimistic lock (chosen)
+      — concurrent ops on different compartments proceed in parallel,
+      (2) one lock for the whole `LockerLocation` aggregate — simpler
+      to reason about but serializes every operation at the station,
+      (3) optimistic concurrency via a `version` column + conditional
+      update (CAS) — no blocking at all, but the caller must handle a
+      failed-CAS retry, and it only pays off when contention on the
+      same compartment is rare
 - [x] Size-matching strictness: strict exact-match, simple, vs
       fallback to larger compartment, better utilization but
       complicates the "exact compartment class" invariant
 
 ### 8. Worked example
 
-- [x] Sequence diagram: courier deposits medium package -> system
-      finds available medium compartment, marks OCCUPIED, generates
-      6-digit code with 3-day expiration, notifies customer
-- [x] Continue trace: 2 days later customer mistypes code (rejected,
-      specific "invalid code" error, no state change)
-- [x] Continue trace: retries with correct code (compartment unlocks,
+- [x] **Diagram A — deposit**: courier deposits medium package ->
+      system finds available medium compartment, marks OCCUPIED,
+      generates 6-digit code with 3-day expiration, notifies customer
+      (split from the pickup trace below — depositing and retrieving
+      are different actors and different concerns)
+- [x] **Diagram B — pickup**: 2 days later customer mistypes code
+      (rejected, specific "invalid code" error, no state change);
+      retries with correct code (compartment unlocks,
       Package->PICKED_UP, AccessToken consumed,
       Compartment->AVAILABLE)
-- [x] Contrast branch: customer never shows, day 3 token flips
-      EXPIRED (stays mapped), staff sweep via
+- [x] **Diagram C — contrast branch**: customer never shows, day 3
+      token flips EXPIRED (stays mapped), staff sweep via
       openExpiredCompartments() unlocks it, compartment reset to
       AVAILABLE
-- [x] Exercises deposit, pickup, expiry, staff-override in one flow
+- [x] Exercises deposit, pickup, expiry, staff-override across three
+      focused diagrams instead of one crammed diagram
 
 ### 9. Interview angle
 
@@ -439,3 +466,74 @@ directly in the finished lesson:
 
 Nothing from the LLD checklist section was dropped. (HLD's own
 completeness pass is logged separately above, once `hld.mdx` was built.)
+
+**`lld.mdx` — retrofit pass, 2026-08-27.** Retrofitted to the repo's
+higher content standard (D2 diagrams, granular mechanism coverage,
+bullets/`CompareTable`/`KeyStat` over prose). Walked the updated "LLD
+Checklist (`lld.mdx`) — primary side" section above item by item; all
+still ticked, nothing dropped:
+
+- Problem framing / requirements at the object level: unchanged in
+  substance, tightened into bullets; added a `KeyStat` (30-150
+  compartments/station) tying the O(n)-scan trade-off to a concrete
+  number instead of leaving it abstract.
+- Class diagram: split into the two diagrams the updated checklist now
+  calls for — Diagram A (core locker domain: LockerLocation,
+  Compartment, Package, AccessToken and their relationships) and
+  Diagram B (order/customer integration context: Order, Customer,
+  DeliveryAgent, Reservation, LockerService), both converted to D2
+  `shape: class`. All nine original classes and every original
+  relationship are present across the two diagrams; `Package` and
+  `LockerLocation` reappear in Diagram B as unadorned stub nodes so the
+  cross-diagram relationships (Order composes Package, LockerService
+  coordinates LockerLocation) still render without duplicating field
+  lists.
+- State machines: all three (Compartment, Package, AccessToken)
+  converted to D2 shapes-and-connections (no dedicated D2 state shape),
+  every transition including back-edges preserved, explicit start/end
+  marker nodes added since D2 has no `[*]` shorthand, and the
+  EXPIRED-token annotation reproduced as a dashed-edge note node since
+  D2 sequence-diagram-style `note over` doesn't apply to state charts.
+- Design patterns: all seven items covered; Strategy expanded from a
+  one-line mention into a named three-branch `CompareTable`
+  (exact-size-match / best-fit fallback / reserved sub-pool split) per
+  the updated checklist, with notification-channel selection kept as a
+  named second application of the same pattern.
+- Database design: all five tables, all three indexes, normalization,
+  and retention covered; ER diagram converted to D2 `shape: sql_table`
+  per entity with `constraint: primary_key`/`foreign_key` on every key
+  column.
+- Trade-offs: all five original pairs preserved verbatim in substance,
+  plus the two new three-branch mechanism discussions the updated
+  checklist calls for, each as its own `CompareTable`: concurrency
+  control (per-compartment pessimistic lock / single aggregate lock /
+  optimistic version-check CAS) and token-expiry detection (lazy
+  check-on-read / active background sweep / hard delete).
+- Worked example: split into the three diagrams the updated checklist
+  calls for (deposit; pickup with wrong-code-then-correct-code; expiry
+  and staff sweep), each a D2 `shape: sequence_diagram`, state
+  transitions reproduced as self-edge note messages (D2 sequence
+  diagrams have no dedicated `Note over` construct). One label
+  (`[C-09: code 771102]`) had to be requoted as plain text — D2's
+  parser reads a bare `[...]` edge label as an array-assignment token,
+  confirmed via a local compile check (see below) — semantics
+  unchanged.
+- Interview angle, recap quiz (8 items), open design challenge, and
+  rubric (6 items): carried over verbatim — no changes were needed
+  against the checklist, and the returns-extension reference answer now
+  explicitly cross-links to the new reserved-sub-pool-split branch
+  introduced in the Strategy `CompareTable`.
+- Diagram count: 9 total (2 class + 3 state + 1 ER + 3 sequence), well
+  above the 4-5 floor.
+
+Verification: this worktree's checkout predates the D2 component
+infrastructure (`D2Diagram`, `CompareTable`, `KeyStat`, `render-d2.ts`)
+landing on `master`, so `pnpm dev` could not be used here — per
+CLAUDE.md, UI/dev-server verification applies to app-shell/component
+work, not content-only `.mdx` changes, which this completeness pass
+covers instead. All 9 D2 chart sources were independently verified by
+installing `@terrastruct/d2` in a scratch directory and compiling +
+rendering each extracted `chart={...}` block with the same
+`layout: "dagre"` option `render-d2.ts` uses — all 9 compiled and
+rendered cleanly (one label-quoting fix applied, noted above) before
+the diagrams were considered final.
