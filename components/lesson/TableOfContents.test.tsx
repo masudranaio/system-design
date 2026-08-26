@@ -1,0 +1,44 @@
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { TableOfContents } from "./TableOfContents";
+
+afterEach(() => {
+  cleanup();
+  document.body.innerHTML = "";
+});
+
+function renderArticleWithHeadings() {
+  document.body.innerHTML = `
+    <article id="lesson-article">
+      <h2 id="problem-framing">Problem framing</h2>
+      <p>...</p>
+      <h2 id="architecture">Architecture</h2>
+      <p>...</p>
+    </article>
+  `;
+}
+
+describe("TableOfContents", () => {
+  it("renders one clickable link per h2 heading found in the target article", () => {
+    renderArticleWithHeadings();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    render(<TableOfContents containerId="lesson-article" />, { container });
+
+    const links = screen.getAllByRole("link");
+    expect(links).toHaveLength(2);
+    expect(links[0]).toHaveTextContent("Problem framing");
+    expect(links[0]).toHaveAttribute("href", "#problem-framing");
+    expect(links[1]).toHaveTextContent("Architecture");
+    expect(links[1]).toHaveAttribute("href", "#architecture");
+  });
+
+  it("renders nothing (no nav) when the target article has no headings", () => {
+    document.body.innerHTML = `<article id="lesson-article"></article>`;
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    render(<TableOfContents containerId="lesson-article" />, { container });
+
+    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+  });
+});
