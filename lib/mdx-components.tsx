@@ -3,7 +3,6 @@ import { DiagramPanel } from "@/components/lesson/DiagramPanel";
 import { D2Diagram } from "@/components/lesson/D2Diagram";
 import { QuizItem } from "@/components/lesson/QuizItem";
 import { Rubric } from "@/components/lesson/Rubric";
-import { SectionTracker } from "@/components/lesson/SectionTracker";
 import { CompareTable } from "@/components/lesson/CompareTable";
 import { KeyStat } from "@/components/lesson/KeyStat";
 import { Point } from "@/components/lesson/Point";
@@ -13,7 +12,6 @@ export const mdxComponents: MDXComponents = {
   D2Diagram,
   QuizItem,
   Rubric,
-  SectionTracker,
   CompareTable,
   KeyStat,
   Point,

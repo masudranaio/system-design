@@ -7,7 +7,7 @@
   {
     "title": "Amazon Locker — Low-Level Design",
     "href": "/case-studies/amazon-locker/lld",
-    "excerpt": "<SectionTracker\n  sections={[\"Problem Framing\", \"Core Content\", \"Trade-offs\", \"Worked Example\", \"Interview Angle\", \"Practice & Self-Check\"]}\n  active=\"Problem Framing\"\n/\n\n Problem framing\n\nZoom in to"
+    "excerpt": "Problem framing\n\nZoom in to a single locker station: one bank of compartments bolted to a\nwall in an apartment lobby or grocery store, with no knowledge of any\nother station in the network. A courie"
   },
   {
     "title": "Parking Lot — High-Level Design",
@@ -17,7 +17,7 @@
   {
     "title": "Parking Lot — Low-Level Design",
     "href": "/case-studies/parking-lot/lld",
-    "excerpt": "<SectionTracker\n  sections={[\"Problem framing\", \"Core content\", \"Trade-offs\", \"Worked example\", \"Interview angle\", \"Practice & self-check\"]}\n  active=\"Problem framing\"\n/\n\n Problem framing\n\nParking lo"
+    "excerpt": "Problem framing\n\nParking lot is the \"Hello World\" of low-level design interviews — not\nbecause it's trivial, but because it's small enough to fully model in\n45 minutes while still forcing every core"
   },
   {
     "title": "Ticketmaster: High-Level Design",
@@ -27,6 +27,6 @@
   {
     "title": "Ticketmaster — Booking, Seat & Event Schema",
     "href": "/case-studies/ticketmaster/lld",
-    "excerpt": "<SectionTracker\n  sections={[\"Problem\", \"Entities\", \"Classes\", \"State machines\", \"Patterns\", \"Database\", \"Trade-offs\", \"Worked example\", \"Interview\", \"Practice\"]}\n  active=\"Problem\"\n/\n\n Problem frami"
+    "excerpt": "Problem framing\n\nThe [HLD lesson](/case-studies/ticketmaster/hld) solved double-booking at\nthe system level: a Redis TTL lock plus a distributed queue keep 100,000\nsimultaneous buyers from colliding"
   }
 ]

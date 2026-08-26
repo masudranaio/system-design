@@ -1,8 +1,10 @@
 import path from "node:path";
 import { notFound } from "next/navigation";
 import { MDXRemote } from "next-mdx-remote-client/rsc";
+import rehypeSlug from "rehype-slug";
 import { getLesson } from "@/lib/content";
 import { mdxComponents } from "@/lib/mdx-components";
+import { LessonShell } from "@/components/lesson/LessonShell";
 
 export default async function CaseStudyHldPage({
   params,
@@ -15,9 +17,12 @@ export default async function CaseStudyHldPage({
   if (!lesson) notFound();
 
   return (
-    <article className="mx-auto max-w-[68ch]">
-      <h1 className="text-2xl font-semibold text-foreground">{lesson.title}</h1>
-      <MDXRemote source={lesson.source} components={mdxComponents} />
-    </article>
+    <LessonShell title={lesson.title}>
+      <MDXRemote
+        source={lesson.source}
+        components={mdxComponents}
+        options={{ mdxOptions: { rehypePlugins: [rehypeSlug] } }}
+      />
+    </LessonShell>
   );
 }

@@ -1,4 +1,3 @@
-import { SectionTracker } from "@/components/lesson/SectionTracker";
 import { QuizItem } from "@/components/lesson/QuizItem";
 import { Rubric } from "@/components/lesson/Rubric";
 import { DiagramPanel } from "@/components/lesson/DiagramPanel";
@@ -8,11 +7,6 @@ export default function StyleGuidePage() {
   return (
     <div className="mx-auto flex max-w-[68ch] flex-col gap-8">
       <h1 className="text-2xl font-semibold text-foreground">Style guide</h1>
-
-      <SectionTracker
-        sections={["Problem framing", "Core content", "Trade-offs"]}
-        active="Core content"
-      />
 
       <DiagramPanel
         title="Sample request flow"

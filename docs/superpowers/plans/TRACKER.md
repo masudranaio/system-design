@@ -14,10 +14,10 @@ genuinely broken. Spec/plan:
 
 **Phase A — D2 diagram engine (Mermaid fallback if D2 can't be fixed)**
 - [x] A1. Fix D2 compile API mismatch, finish `render-d2.ts` + icon map, verify build, commit — **done**, commit `63e3970`. Root cause: `compile(input, options)`'s second arg is `{options: CompileOptions}`, not `CompileOptions` directly (`d2/index.d.ts` — no shipped `@types` package, had to read the real `.d.ts` inside the installed package). Fixed to `d2.compile(source, { options: { layout: "dagre" } })`. `pnpm build` clean, 31/31 tests pass.
-- [ ] A2. Extract shared `DiagramChrome`, build `D2Diagram` Server Component, register in MDX
-- [ ] A3. Build `TableOfContents` scroll-aware right-rail
-- [ ] A4. Make `Sidebar` sticky/independently scrollable
-- [ ] A5. Wire `LessonShell` + `rehype-slug` into all 5 page routes, remove `SectionTracker`
+- [x] A2. Extract shared `DiagramChrome`, build `D2Diagram` Server Component, register in MDX — **done**, merged `648567b` + controller fix `4bf4445`. Two real bugs found live-verifying the style-guide D2 demo (neither caught by unit tests): (1) D2's white canvas-background rect showed as a stray white box in dark mode — stripped server-side in `render-d2.ts`; (2) D2's outer `<svg>` has a viewBox but no width cap, so a tall/narrow diagram stretched to fill its container's width and blew up to ~2600px tall — `DiagramChrome` now caps `max-width` to the diagram's authored pixel width. Verified both themes via Playwright.
+- [x] A3. Build `TableOfContents` scroll-aware right-rail — **done**, merged `d5e6684`, later realigned to `top-16`/`4rem` (see A4).
+- [x] A4. Make `Sidebar` sticky/independently scrollable — **done**, merged `caf93a1` (real TopBar height measured live: 57px, used `top-16`/`4rem` not the plan's assumed `top-20`/`5rem`; resolved a merge conflict that had dropped the nav's border/bg/padding — restored). `TableOfContents` updated to match the same real height so both rails align.
+- [ ] A5. Wire `LessonShell` + `rehype-slug` into all 5 page routes, remove `SectionTracker` — **starting now**
 - [ ] A6. Full Playwright verification of engine + layout shell, both themes
 
 **Phase B — Retrofit the 3 existing case studies (D2 diagrams, new content standard)**
