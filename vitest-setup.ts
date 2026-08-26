@@ -1,4 +1,16 @@
 import "@testing-library/jest-dom/vitest";
+import { afterEach } from "vitest";
+import { cleanup } from "@testing-library/react";
+
+// Vitest's `globals` option is off (see vitest.config.ts), so
+// @testing-library/react's built-in auto-cleanup — which only registers
+// itself when it finds a global `afterEach` — never fires on its own.
+// Register it explicitly so each test starts from an empty DOM; without
+// this, multiple `render()` calls across `it()` blocks in the same file
+// leak markup between tests.
+afterEach(() => {
+  cleanup();
+});
 
 // jsdom doesn't implement ResizeObserver, but cmdk (shadcn's Command
 // primitive, used by SearchDialog) needs it to measure list content.

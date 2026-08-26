@@ -3,19 +3,39 @@ import { DiagramPanel } from "@/components/lesson/DiagramPanel";
 import { QuizItem } from "@/components/lesson/QuizItem";
 import { Rubric } from "@/components/lesson/Rubric";
 import { SectionTracker } from "@/components/lesson/SectionTracker";
+import { CompareTable } from "@/components/lesson/CompareTable";
+import { KeyStat } from "@/components/lesson/KeyStat";
+import { Point } from "@/components/lesson/Point";
 
 export const mdxComponents: MDXComponents = {
   DiagramPanel,
   QuizItem,
   Rubric,
   SectionTracker,
+  CompareTable,
+  KeyStat,
+  Point,
   h2: (props) => (
-    <h2 className="mt-8 text-xl font-semibold text-foreground" {...props} />
+    <h2
+      className="mt-8 text-[1.5rem] leading-[1.3] font-semibold text-foreground"
+      {...props}
+    />
   ),
   h3: (props) => (
-    <h3 className="mt-6 text-lg font-semibold text-foreground" {...props} />
+    <h3
+      className="mt-6 text-[1.25rem] leading-[1.35] font-semibold text-foreground"
+      {...props}
+    />
   ),
-  p: (props) => <p className="mt-4 text-foreground" {...props} />,
+  h4: (props) => (
+    <h4
+      className="mt-5 text-[1.0625rem] leading-[1.4] font-semibold text-foreground"
+      {...props}
+    />
+  ),
+  p: (props) => (
+    <p className="mt-4 text-[1.09375rem] leading-[1.7] text-foreground" {...props} />
+  ),
   ul: (props) => (
     <ul className="mt-4 list-disc pl-6 text-foreground" {...props} />
   ),
