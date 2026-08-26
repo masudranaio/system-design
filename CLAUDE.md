@@ -75,6 +75,32 @@ before starting work in this repo if they're not already in context.
 - Each module/case-study folder gets a plain-Markdown `README.md` index
   linking to its lessons — do not make indexes into MDX/HTML pages.
 
+## UI verification (any app-shell, component, or pipeline work)
+
+Applies to any task that touches `app/`, `components/`, or rendering
+(the Next.js plans in `docs/superpowers/plans/`) — not to content-only
+(`.mdx`) work, which is covered by the completeness pass below instead.
+
+- **Never mark UI work done from code review alone.** Start the dev
+  server and drive it with the Playwright MCP tools
+  (`mcp__plugin_playwright_playwright__*`) — navigate to every route or
+  component state the task touched, take a snapshot/screenshot, and read
+  it back before reporting the task complete.
+- **Test both themes, every time.** Toggle `next-themes` to `light` and
+  to `dark` (not just the OS default) and capture/inspect both — a
+  contrast or token bug that only shows in one theme is still a bug.
+  This repeats and binds `docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md`'s
+  design-tokens section: every token pair (`--color-*`, light/dark) is
+  in scope for this check, not just the ones the task directly edited.
+- **Check professional polish, not just "it renders":** text is legible
+  against its surface in both themes, spacing/alignment holds at a
+  couple of viewport widths, interactive elements (buttons, nav links,
+  quiz/rubric widgets) show a visible focus/hover state, no layout
+  overflow or horizontal scroll on the page body.
+- **Fix what you find before moving on** — a UI task isn't done because
+  it compiles; it's done because it was seen, in both themes, and looked
+  right.
+
 ## After writing a lesson
 
 - **Run a completeness pass**: walk the case study's `CHECKLIST.md`
