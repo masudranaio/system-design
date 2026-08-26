@@ -25,7 +25,7 @@ describe("SearchDialog", () => {
     const user = userEvent.setup();
     render(<SearchDialog />);
 
-    await user.click(screen.getByRole("button", { name: "Search" }));
+    await user.click(screen.getByRole("button", { name: "Search lessons" }));
 
     await waitFor(() => {
       expect(screen.getByText("Scalability & Core Metrics")).toBeInTheDocument();
