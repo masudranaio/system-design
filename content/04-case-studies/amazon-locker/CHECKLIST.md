@@ -1,0 +1,346 @@
+# Amazon Locker — Case Study Checklist
+
+Content plan for `hld.mdx` and `lld.mdx`, reviewed before either is
+drafted. Produced per
+[docs/superpowers/specs/2026-08-26-case-study-lesson-format-and-ticketmaster-design.md](../../../docs/superpowers/specs/2026-08-26-case-study-lesson-format-and-ticketmaster-design.md),
+with the output format amended by
+[docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md](../../../docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md).
+
+Status: LLD not started (primary side), HLD not started (secondary
+side). See [SYLLABUS.md](../../../SYLLABUS.md) /
+[04-case-studies/SYLLABUS.md](../SYLLABUS.md) (CS-06) for build
+priority — this checklist is a plan, not a built lesson.
+
+## Problem Scope
+
+Design a self-service parcel locker system where a courier deposits a
+package into a size-matched, available compartment and a customer
+retrieves it later using a time-limited access code — at both
+single-station (LLD) and city-wide-network (HLD) level.
+
+### Functional Requirements
+
+- [ ] Search for a locker station near a delivery address with
+      capacity for a given package size
+- [ ] Carrier deposits a package: system matches size to an available
+      compartment, assigns it, generates a unique access code/token
+- [ ] Customer notified (code + instructions) once deposited
+- [ ] Customer retrieves via code at touchscreen/app; correct code
+      unlocks the exact compartment and frees it afterward
+- [ ] Access codes expire after a fixed pickup window; expired codes
+      rejected
+- [ ] Staff/ops can force-open compartments with expired, unclaimed
+      packages
+- [ ] Returns flow: customer drops off a return package with a
+      separate drop-off code; locker enters "return-pending" state
+      until carrier pickup
+- [ ] Specific errors: invalid code, expired code, already-used code,
+      no matching-size compartment available
+
+### Non-Functional Requirements
+
+- [ ] One access token maps to exactly one package/compartment (1:1)
+- [ ] Strict size matching in the base design (small/medium/large,
+      sometimes XL/XXL) — no automatic fallback unless an extension
+- [ ] Pickup window: ~3 days standard, up to 7 days expedited, ~14
+      days business accounts; 24h/48h reminder notifications
+- [ ] Returns dwell time longer than deliveries (~6 days vs ~2.5-3
+      days)
+- [ ] Package limits: up to ~19 inches per dimension, under ~35 lbs
+- [ ] Concurrency: no double-booking the same compartment; no two
+      couriers depositing into the same slot simultaneously
+- [ ] Must distinguish "expired" from "never existed" (keep expired
+      tokens mapped, don't delete)
+- [ ] At scale (HLD): 24/7 availability, offline-degraded mode,
+      sub-100ms availability-query latency, 2-3s unlock latency, >95%
+      cache hit rate
+
+### Explicitly Out of Scope
+
+- [ ] Payment processing for locker rental/storage fees
+- [ ] Full user account/auth system — assume identity already
+      established
+- [ ] Notification system internals in the base LLD (extension only)
+- [ ] Lockout-after-failed-attempts mechanism (extension only)
+- [ ] Route optimization for delivery agents, physical robotics/
+      hardware internals
+
+## HLD Checklist (`hld.mdx`) — secondary side
+
+### 1. Problem framing
+
+- [ ] Zoom out to a city-wide/nationwide network of thousands of
+      locker stations: geo-discovery ("find a locker near me with
+      capacity"), coordinating reservations across an IoT-connected
+      fleet, staying available when individual lockers lose
+      connectivity
+- [ ] Frame as "a distributed IoT + reservation system," not just the
+      LLD problem at bigger numbers
+
+### 2. Requirements & capacity estimate
+
+- [ ] Locker discovery by geo-radius + size/capacity filter
+- [ ] Atomic slot reservation preventing double-booking across
+      concurrent requests
+- [ ] Deposit/pickup at any of thousands of stations
+- [ ] Device health/telemetry monitoring
+- [ ] OTA firmware updates
+- [ ] Returns coordination with carrier pickup scheduling
+- [ ] Scale: peak ~500,000 QPS on the capacity-reservation path
+      (scaled from ~2,000 QPS baseline)
+- [ ] <100ms availability-query latency
+- [ ] 2-3s unlock latency
+- [ ] >95% cache hit rate
+- [ ] 24/7 with graceful offline degradation
+- [ ] Compartment mix ~40% small/35% medium/20% large/5% oversized,
+      30-150 compartments per station
+- [ ] Prime Day-style events causing 10-20x volume spikes
+
+### 3. Core content — architecture diagram
+
+- [ ] API Gateway/frontend layer: customer app, delivery-agent app,
+      in-station touchscreen
+- [ ] Core microservices: Locker Management Service (station/
+      compartment state+health), Capacity Reservation Service (hot
+      path, matches packages to compartments under heavy concurrency),
+      Package Service (lifecycle), Auth Service, Notification Service,
+      Returns Service
+- [ ] Multi-level caching tier (in-process -> Redis/Memcached ->
+      pre-computed regional snapshots) in front of a geo-sharded DB
+      layer (Postgres transactional + InfluxDB-style time-series for
+      telemetry)
+- [ ] Separate IoT layer: each locker connects over MQTT (async
+      telemetry: heartbeat, door sensors, power, firmware version)
+      with a synchronous unlock-command path and TLS/X.509 device auth
+
+### 4. Core content — deep dives
+
+- [ ] Geo-discovery + atomic reservation under contention:
+      geo-hashing for radius queries, cached ranked results,
+      optimistic concurrency control with versioned conditional
+      updates, pre-allocated regional reservation queues at extreme
+      throughput
+- [ ] Multi-level caching for the 500K QPS read path: L1 in-process
+      <1ms TTL 5-10s -> L2 Redis 1-5ms write-through -> L3
+      pre-computed regional snapshots refreshed every 5-15s -> L4
+      geo-sharded Postgres source of truth
+- [ ] IoT offline resilience: local cache of active pickup codes so
+      pickup succeeds offline, local retry queue with exponential
+      backoff, reconciliation on reconnect, battery backup 30-60min,
+      fail-secure vs fail-open lock hardware trade-off
+
+### 5. Trade-offs
+
+- [ ] Consistency vs availability for locker state: eventual (station
+      keeps serving while offline, reconciles later) vs strong
+      (blocks deposit until central confirms, safer but breaks
+      offline-tolerance)
+- [ ] Local code verification (offline pickups, delayed revocation) vs
+      centralized verification (safer, connectivity-dependent)
+- [ ] Reservation aggressiveness: conservative holds, guaranteed but
+      lower utilization vs aggressive/probabilistic release based on
+      predicted dwell time, higher utilization but conflict risk
+- [ ] Precomputed regional snapshots (sustain 500K QPS, seconds-stale)
+      vs on-demand computation (fresh, can't hit throughput without
+      heavy caching anyway)
+
+### 6. Worked example
+
+- [ ] Trace: customer app queries "lockers near me with a medium
+      slot" -> geo-hash lookup hits L3 snapshot cache (miss falls to
+      L2 Redis then L4 Postgres)
+- [ ] Continue trace: customer reserves via Capacity Reservation
+      Service (optimistic-concurrency conditional update on
+      compartment row/version)
+- [ ] Continue trace: courier arrives, station briefly offline
+      (cellular blip), but reservation was already synced to the
+      station's local cache pre-arrival so deposit succeeds locally,
+      telemetry queues confirmation
+- [ ] Continue trace: central system reconciles once reconnected,
+      updates source-of-truth DB, invalidates stale cache entries,
+      fires customer notification
+- [ ] Exercises geo-discovery, caching tiers, optimistic concurrency,
+      offline-resilience in one flow
+
+### 7. Interview angle
+
+- [ ] Follow-up: "How do you prevent two customers from reserving the
+      same compartment at the same time across two different app
+      servers?" (optimistic concurrency vs naive locking)
+- [ ] Follow-up: "A locker station loses internet for an hour during a
+      busy period — what happens to in-flight pickups/deposits?"
+      (offline-resilience deep dive)
+- [ ] Follow-up: "Prime Day causes a 15x spike in one metro area —
+      where does the system bend/break first, how do you protect it?"
+      (caching tiers, regional load balancing, queueing vs just adding
+      servers)
+
+### 8. Practice & Self-Check
+
+- [ ] Open challenge: "Extend the network-scale design to support
+      dynamic, demand-aware locker placement: given historical
+      utilization and dwell-time data per station, design a subsystem
+      that recommends where to add new locker capacity (or reallocate
+      compartment-size mix) in a city. What data would you pipe from
+      the Package/Reservation services into this subsystem, how would
+      you avoid it becoming a bottleneck on the hot reservation path,
+      and how does this connect to dwell-time prediction?" with rubric
+
+## LLD Checklist (`lld.mdx`) — primary side
+
+### 1. Problem framing
+
+- [ ] Frame the problem as a single locker station (one
+      LockerLocation/LockerStation aggregate managing many
+      compartments), not the network
+- [ ] Actors: courier (deposit), customer (pickup), ops/staff
+      (exceptions)
+- [ ] Frame as a resource-allocation-with-a-lease problem — same shape
+      as parking-lot/hotel-booking LLD, a good comparison point for
+      the interviewer
+
+### 2. Requirements at the object level
+
+- [ ] Deposit operation: given package size, find available matching
+      compartment, mark occupied, generate access token, return code
+      or error
+- [ ] Pickup operation: given code, look up token, validate not
+      expired/used, unlock mapped compartment, free it, invalidate
+      token
+- [ ] Staff sweep operation: enumerate compartments with expired
+      tokens, open them
+- [ ] NFRs at the object level: thread-safety per compartment,
+      O(1)-ish code lookup, extensibility for new sizes/strategies
+
+### 3. Class diagram
+
+- [ ] Mermaid class diagram (`classDiagram`) covering
+      LockerLocation/LockerStation (aggregate root, holds Compartments
+      + accessTokenMapping\<code,AccessToken\> for O(1) lookup)
+- [ ] Compartment (id, size, status/occupied, owns its own occupancy
+      state — Information Expert pattern)
+- [ ] Package (packageId, size, tracking metadata, lifecycle state)
+- [ ] AccessToken/AccessCode (code, expiration, ref to Compartment,
+      owns its own expiration logic)
+- [ ] Reservation (optional, between Customer/Order and Locker, for
+      "reserve before courier arrives")
+- [ ] Customer, Courier/DeliveryAgent (actors)
+- [ ] Order (links Customer + Item/Package list + destination
+      LockerLocation)
+- [ ] LockerService (facade exposing depositPackage()/pickup()/
+      openExpiredCompartments())
+- [ ] Relationships: LockerLocation aggregates many Compartments
+      (1-to-many), AccessToken references exactly one
+      Compartment/Package (1-to-1), Order composes Items, Customer
+      associated with Orders
+
+### 4. State machines
+
+- [ ] Compartment state machine: AVAILABLE -> RESERVED(optional) ->
+      OCCUPIED -> AVAILABLE on pickup, extension
+      OUT_OF_SERVICE/MAINTENANCE, HLD variant adds a RETURN_PENDING
+      branch
+- [ ] Package state machine: IN_TRANSIT -> DEPOSITED/STORED ->
+      PICKED_UP, alternate -> EXPIRED -> RETURNED_TO_SENDER (or manual
+      removal)
+- [ ] AccessToken state machine: ACTIVE -> EXPIRED (time-based) or
+      CONSUMED (on pickup)
+- [ ] Key nuance: expired token stays in the mapping (not deleted) so
+      the system distinguishes "expired" from "never existed" and
+      openExpiredCompartments() can enumerate it
+
+### 5. Design patterns
+
+- [ ] State (Compartment status as explicit enum
+      AVAILABLE/RESERVED/OCCUPIED/OUT_OF_SERVICE, fits the state
+      machine)
+- [ ] Strategy (compartment-assignment: exact-size-only vs fallback vs
+      best-fit; notification channel selection)
+- [ ] Facade (LockerService coordinator hides lock management and
+      multi-step workflows)
+- [ ] Repository (abstracts persistence for Locker/Package/Customer)
+- [ ] Observer (customer notification on state changes — good hook to
+      mention even though full notification impl is out of base
+      scope)
+- [ ] Factory/Builder (generateAccessToken() encapsulates token
+      creation + expiration calc)
+- [ ] Two-Phase-Commit-style workflow (reserveCompartment() +
+      confirmDeposit() split, avoids a slot marked occupied with
+      nothing in it — worth naming as a technique even though not a
+      GoF pattern)
+
+### 6. Database design
+
+- [ ] Tables: locker_locations(location_id, geo-coords, status),
+      compartments(slot_id, location_id FK, size, status),
+      packages(package_id, compartment_id FK, customer_id FK, status,
+      timestamps), access_tokens(code, package_id FK, expiration,
+      used_at), access_log(actor, action, compartment_id, timestamp)
+      for audit/dispute resolution
+- [ ] Indexing: compartments(location_id, size, status) for "find
+      available compartment of size X"
+- [ ] Indexing: access_tokens.code (or hashed) for O(1) pickup lookup
+- [ ] Indexing: packages(status, expiration) for staff-sweep query
+- [ ] Normalization: Compartment occupancy as single source of truth
+      (Information Expert argument translated to schema)
+- [ ] Retention: keep expired-but-unclaimed rows for a grace period
+      (don't hard-delete) for staff sweeps/dispute resolution
+
+### 7. Trade-offs
+
+- [ ] Occupancy tracking on Compartment itself (single source of
+      truth) vs centralized Set\<compartmentId\> in the aggregate
+      (simpler queries, drift risk)
+- [ ] Expired-token cleanup timing: keep mapped until staff clears vs
+      eager delete — distinction vs simplicity
+- [ ] Compartment lookup: O(n) linear scan, fine at single-station
+      scale, vs indexed available-queue per size — O(1) but two
+      structures to keep in sync
+- [ ] Locking granularity: per-compartment lock, concurrent ops, vs
+      one lock for whole aggregate, simpler but serializes
+- [ ] Size-matching strictness: strict exact-match, simple, vs
+      fallback to larger compartment, better utilization but
+      complicates the "exact compartment class" invariant
+
+### 8. Worked example
+
+- [ ] Sequence diagram: courier deposits medium package -> system
+      finds available medium compartment, marks OCCUPIED, generates
+      6-digit code with 3-day expiration, notifies customer
+- [ ] Continue trace: 2 days later customer mistypes code (rejected,
+      specific "invalid code" error, no state change)
+- [ ] Continue trace: retries with correct code (compartment unlocks,
+      Package->PICKED_UP, AccessToken consumed,
+      Compartment->AVAILABLE)
+- [ ] Contrast branch: customer never shows, day 3 token flips
+      EXPIRED (stays mapped), staff sweep via
+      openExpiredCompartments() unlocks it, compartment reset to
+      AVAILABLE
+- [ ] Exercises deposit, pickup, expiry, staff-override in one flow
+
+### 9. Interview angle
+
+- [ ] Follow-up: "What happens if two couriers try to deposit into the
+      same compartment at the same instant?" (concurrency/locking)
+- [ ] Follow-up: "How would you support package sizes that don't fit
+      any single compartment, or multiple packages in one order?"
+      (Strategy extensibility)
+- [ ] Follow-up: "The customer lost their code — what do you do?"
+      (reissuable AccessToken vs deleted mapping)
+
+### 10. Practice & Self-Check
+
+- [ ] Open challenge: "Extend the design to support package returns:
+      customer drops off a return item via a separate drop-off flow,
+      compartment enters RETURN_PENDING (distinct from normal
+      delivery occupancy so ops can tell delivery-dwell from
+      return-dwell), carrier later collects all return-pending
+      packages in one sweep. Which classes change, which
+      states/transitions get added to the state machine, does the
+      Strategy pattern need a second implementation for return-slot
+      assignment?" with rubric
+
+## Completeness Pass Log
+
+Not yet run — fill in when `hld.mdx`/`lld.mdx` are built, per
+CLAUDE.md's "After writing a lesson" rule.
