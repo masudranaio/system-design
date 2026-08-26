@@ -1,11 +1,14 @@
 # Ticketmaster — Case Study Checklist
 
-Content plan for `hld.html` and `lld.html`, reviewed before either is
+Content plan for `hld.mdx` and `lld.mdx`, reviewed before either is
 drafted. Produced per
-[docs/superpowers/specs/2026-08-26-case-study-lesson-format-and-ticketmaster-design.md](../../docs/superpowers/specs/2026-08-26-case-study-lesson-format-and-ticketmaster-design.md).
+[docs/superpowers/specs/2026-08-26-case-study-lesson-format-and-ticketmaster-design.md](../../../docs/superpowers/specs/2026-08-26-case-study-lesson-format-and-ticketmaster-design.md),
+with the output format amended by
+[docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md](../../../docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md)
+(`hld.html`/`lld.html` → `hld.mdx`/`lld.mdx`; content plan unchanged).
 
 Status: HLD not started, LLD not started. See
-[SYLLABUS.md](../../SYLLABUS.md) / [04-case-studies/SYLLABUS.md](../SYLLABUS.md)
+[SYLLABUS.md](../../../SYLLABUS.md) / [04-case-studies/SYLLABUS.md](../SYLLABUS.md)
 (CS-08) for build priority — this checklist is a plan, not a built lesson.
 
 ## Problem Scope
@@ -41,7 +44,7 @@ the same show in the same second.
 - [ ] Recommendations/marketing
 - [ ] Refund/dispute policy details
 
-## HLD Checklist (`hld.html`)
+## HLD Checklist (`hld.mdx`)
 
 ### 1. Problem framing
 
@@ -100,7 +103,7 @@ the same show in the same second.
 - [ ] Open challenge: "design the seat-hold expiry and cleanup
       mechanism" with rubric
 
-## LLD Checklist (`lld.html`)
+## LLD Checklist (`lld.mdx`)
 
 ### 1. Problem framing
 
@@ -175,5 +178,5 @@ the same show in the same second.
 
 ## Completeness Pass Log
 
-Not yet run — fill in when `hld.html`/`lld.html` are built, per
+Not yet run — fill in when `hld.mdx`/`lld.mdx` are built, per
 CLAUDE.md's "After writing a lesson" rule.

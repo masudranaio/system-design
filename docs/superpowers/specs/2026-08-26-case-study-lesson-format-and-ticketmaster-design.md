@@ -1,10 +1,14 @@
 # Case Study Lesson Format + Ticketmaster Pilot — Design
 
 **Date:** 2026-08-26
-**Status:** Approved, spec-only (no HTML lessons built yet)
+**Status:** Approved, spec-only (no lessons built yet)
 **Amends:** [2026-08-26-system-design-course-outline-design.md](2026-08-26-system-design-course-outline-design.md)
  — extends its "Lesson template" section and its 04-case-studies process;
 does not change locked scope, structure, or the priority build order.
+**Output format amended by:**
+[2026-08-26-nextjs-mdx-app-migration-design.md](2026-08-26-nextjs-mdx-app-migration-design.md) —
+everywhere below that says `hld.html`/`lld.html`, read `hld.mdx`/`lld.mdx`.
+The content plan (this doc) is otherwise unaffected.
 
 ## Purpose
 
@@ -156,7 +160,7 @@ marketing, refund/dispute policy details.
      `AVAILABLE` on expiry or cancellation
    - Booking: `PENDING → CONFIRMED → CANCELLED / EXPIRED`
 5. **Core content — design patterns** (explicit subsection, applies
-   [LLD-03](../../../03-low-level-design/SYLLABUS.md) rather than
+   [LLD-03](../../../content/03-low-level-design/SYLLABUS.md) rather than
    re-teaching it):
    - **State** — for Seat and Booking lifecycles, instead of scattered
      status `if/else` checks
@@ -168,7 +172,7 @@ marketing, refund/dispute policy details.
    - SOLID framing threaded through (e.g. Strategy over an `if/else`
      pricing block as an Open/Closed win)
 6. **Core content — database design** (explicit subsection, applies
-   [LLD-05](../../../03-low-level-design/SYLLABUS.md) rather than
+   [LLD-05](../../../content/03-low-level-design/SYLLABUS.md) rather than
    re-teaching it):
    - ER diagram / schema for the entities above
    - Normalization decisions: seat inventory as its own row per

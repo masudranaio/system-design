@@ -1,12 +1,13 @@
 # Interview Prep — Module Syllabus
 
-Detailed lesson breakdown for `05-interview-prep/`. Top-level progress
-lives in [`/SYLLABUS.md`](../SYLLABUS.md); this file is the authority on
-what each interview-prep lesson covers.
+Detailed lesson breakdown for `content/05-interview-prep/`. Top-level
+progress lives in [`/SYLLABUS.md`](../../SYLLABUS.md); this file is the
+authority on what each interview-prep lesson covers.
 
-Prerequisite: at least a few `02-high-level-design`/`03-low-level-design`/
-`04-case-studies` lessons done, so these frameworks have real examples to
-point back to rather than being abstract.
+Prerequisite: at least a few `content/02-high-level-design`/
+`content/03-low-level-design`/`content/04-case-studies` lessons done, so
+these frameworks have real examples to point back to rather than being
+abstract.
 
 Status: `[ ]` not started, `[~]` in progress, `[x]` done.
 

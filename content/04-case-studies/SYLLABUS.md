@@ -1,10 +1,11 @@
 # Case Studies — Module Syllabus
 
-Detailed case-study list for `04-case-studies/`. Top-level progress lives
-in [`/SYLLABUS.md`](../SYLLABUS.md); this file is the authority on which
-systems are in scope and which design level(s) each one covers.
+Detailed case-study list for `content/04-case-studies/`. Top-level
+progress lives in [`/SYLLABUS.md`](../../SYLLABUS.md); this file is the
+authority on which systems are in scope and which design level(s) each
+one covers.
 
-Every system gets both an `hld.html` and `lld.html` where a genuine second
+Every system gets both an `hld.mdx` and `lld.mdx` where a genuine second
 angle exists (see the design spec's "04-case-studies" section for the
 reasoning). One side is **primary** (built first, the system's classic
 interview framing), the other **secondary** (added later, opportunistically).

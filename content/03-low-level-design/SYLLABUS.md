@@ -1,8 +1,8 @@
 # Low-Level Design — Module Syllabus
 
-Detailed lesson breakdown for `03-low-level-design/concepts/`. Top-level
-progress lives in [`/SYLLABUS.md`](../SYLLABUS.md); this file is the
-authority on what each LLD lesson actually covers.
+Detailed lesson breakdown for `content/03-low-level-design/concepts/`.
+Top-level progress lives in [`/SYLLABUS.md`](../../SYLLABUS.md); this
+file is the authority on what each LLD lesson actually covers.
 
 Researched primarily against AlgoMaster's LLD course, cross-checked against
 HelloInterview's Low-Level Design "in a hurry" guide and its dedicated

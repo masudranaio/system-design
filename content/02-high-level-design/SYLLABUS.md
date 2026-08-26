@@ -1,8 +1,8 @@
 # High-Level Design — Module Syllabus
 
-Detailed lesson breakdown for `02-high-level-design/concepts/`. Top-level
-progress lives in [`/SYLLABUS.md`](../SYLLABUS.md); this file is the
-authority on what each HLD lesson actually covers.
+Detailed lesson breakdown for `content/02-high-level-design/concepts/`.
+Top-level progress lives in [`/SYLLABUS.md`](../../SYLLABUS.md); this
+file is the authority on what each HLD lesson actually covers.
 
 Researched primarily against AlgoMaster's System Design course (24 topic
 areas / 177 lessons) and System Design Interviews course, cross-checked

@@ -1,25 +1,29 @@
 # System Design Course — Working Rules
 
 This is a personal system design learning repo (HLD + LLD, interview-prep
-and reference use). Scope and structure are locked in
-[docs/superpowers/specs/2026-08-26-system-design-course-outline-design.md](docs/superpowers/specs/2026-08-26-system-design-course-outline-design.md).
-Lesson-by-lesson build list and progress live in
-[SYLLABUS.md](SYLLABUS.md). Read both before starting work in this repo if
-they're not already in context.
+and reference use), built as a Next.js + MDX app. Scope and topics are
+locked in
+[docs/superpowers/specs/2026-08-26-system-design-course-outline-design.md](docs/superpowers/specs/2026-08-26-system-design-course-outline-design.md);
+its Format/Repository-structure sections are superseded by
+[docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md](docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md) —
+the app/component architecture, design tokens, and folder structure live
+there. Lesson-by-lesson build list and progress live in
+[SYLLABUS.md](SYLLABUS.md). Read all three before starting work in this
+repo if they're not already in context.
 
 ## Before writing any lesson
 
 1. **Check `SYLLABUS.md`** for the lesson's ID, objective, and dependencies.
    Make sure the dependency lessons exist first (or flag it if they don't).
 2. **Write (or update) the case study's `CHECKLIST.md` first**, in
-   `04-case-studies/<system>/`, before any HTML is drafted. It covers:
-   problem scope (functional/non-functional requirements, explicit
-   in-scope/out-of-scope lines), and a checkbox list per lesson side
-   (HLD, LLD, and "others" only if a third artifact is genuinely needed)
-   covering every diagram, concept, trade-off, pattern, and self-check
-   item that lesson must contain. Review this against the relevant
-   concept-module dependencies (e.g. LLD-03 for patterns, LLD-05 for
-   database design) before writing any HTML.
+   `content/04-case-studies/<system>/`, before any MDX is drafted. It
+   covers: problem scope (functional/non-functional requirements,
+   explicit in-scope/out-of-scope lines), and a checkbox list per lesson
+   side (HLD, LLD, and "others" only if a third artifact is genuinely
+   needed) covering every diagram, concept, trade-off, pattern, and
+   self-check item that lesson must contain. Review this against the
+   relevant concept-module dependencies (e.g. LLD-03 for patterns, LLD-05
+   for database design) before writing any MDX.
 3. **Research the topic before drafting it.** For the specific topic of the
    lesson (not the whole course), search:
    - The reference sources already grouped in the design spec's
@@ -49,16 +53,22 @@ they're not already in context.
   concepts) → trade-offs → worked example → interview angle → Practice &
   Self-Check (recap quiz + open design challenge with rubric +
   self-score band).
-- Concept lessons and case-study lessons are self-contained interactive
-  HTML pages, published as Claude Artifacts (see design spec's "Format"
-  section for why). Use the `artifact-design` skill before drafting one.
-- Use Mermaid for every diagram: architecture diagrams for HLD, ER/class/
-  sequence diagrams for LLD and database design.
+- Concept lessons and case-study lessons are MDX files under
+  `content/<module>/`, rendered by the Next.js app via the shared
+  `components/lesson/*` widgets (`DiagramPanel`, `QuizItem`, `Rubric`,
+  `SectionTracker`) — not standalone HTML. Follow the folder structure,
+  component contracts, and design tokens (color/type/layout) in
+  [docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md](docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md)
+  rather than re-deriving them. Preview locally via `npm run dev` before
+  considering a lesson done.
+- Use Mermaid for every diagram (inside `<DiagramPanel>`): architecture
+  diagrams for HLD, ER/class/sequence diagrams for LLD and database
+  design.
 - A case study's lesson should *apply* the relevant concept lessons rather
   than re-explaining them — link back to the concept lesson instead of
   duplicating its content.
 - Each module/case-study folder gets a plain-Markdown `README.md` index
-  linking to its lessons — do not make indexes into HTML pages.
+  linking to its lessons — do not make indexes into MDX/HTML pages.
 
 ## After writing a lesson
 

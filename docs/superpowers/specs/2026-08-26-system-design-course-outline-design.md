@@ -2,6 +2,13 @@
 
 **Date:** 2026-08-26
 **Status:** Approved scope, not yet built (content produced incrementally, module by module)
+**Note:** This spec's "Format" and "Repository structure" sections are
+superseded by
+[2026-08-26-nextjs-mdx-app-migration-design.md](2026-08-26-nextjs-mdx-app-migration-design.md) —
+lessons are now MDX files under `content/`, rendered by a Next.js app, not
+standalone HTML artifacts. Left unedited below as the historical record;
+everything else in this spec (scope, topic lists, lesson template
+content, build priority order) still governs.
 
 ## Purpose
 
