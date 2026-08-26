@@ -92,37 +92,57 @@ not re-checked here.)
       availability display is acceptable, double-booking
       money/reservations is not
 
-### 3. Core content — architecture diagram
+### 3. Core content — architecture diagrams (split: two diagrams, not one)
 
-- [x] Edge layer: per-lot gate systems/IoT sensors publish
-      state-change events to an ingestion gateway, buffers locally,
-      replays on reconnect
-- [x] Ingestion/streaming layer: durable event log (Kafka-style),
-      system of record per lot
-- [x] Stream processors maintain current-state projections
-- [x] Serving/cache layer (Redis-style, sub-100ms reads, source of
-      truth stays the event log + DB)
-- [x] Geospatial index (geohash/quad-tree) over lot locations
-- [x] API/gateway layer (search/reservation/partner-ingestion,
-      load-balanced stateless services)
-- [x] Reservation service as a separate bounded context (strong
-      consistency) from live-occupancy (eventual consistency)
+- [x] Diagram A — ingestion pipeline: edge layer (company-owned
+      gate/IoT sensor + partner PARCS integration) publishes
+      state-change events to an ingestion gateway (buffers locally,
+      replays on reconnect) -> durable event log (Kafka-style,
+      partitioned by `lot_id`, system of record per lot) -> stream
+      processors (current-state projections) -> serving cache +
+      occupancy DB (system-of-record backstop)
+- [x] Diagram B — search & reservation layer: mobile client -> API/
+      gateway layer (stateless, load-balanced) -> geospatial index
+      (candidate lot_id lookup) + serving cache (batch read,
+      sub-100ms) -> ranked results back to client; reservation service
+      drawn as a separate bounded context (strong consistency) from
+      live-occupancy (eventual consistency), cross-checking the same
+      cache rather than owning it
 
-### 4. Core content — deep dives
+### 4. Core content — deep dives (each a named 2-4-branch mechanism, not a
+one-line mention)
 
-- [x] Data model & partitioning: shard by lot_id/region; two distinct
-      data shapes — high-write append-only event stream vs low-write
-      high-read aggregate/cache — get different storage strategies
-- [x] Keeping availability fresh without hammering the DB: push-based
-      updates via event stream -> cache invalidation, extends the LLD
-      Observer pattern to network scale
-- [x] Handling flaky edge connectivity: gateway-side buffering/replay +
-      periodic reconciliation job against the raw event log
-- [x] Search fan-out: geospatial bounding-box/geohash-prefix lookup,
-      then batch-fetch availability from cache rather than joining the
-      live stream per request
+- [x] Data model & partitioning: (a) partition key = `lot_id`/region
+      (b) that key doubles as the stream processors' natural
+      parallelism boundary (c) two distinct data shapes — high-write
+      append-only event stream vs low-write high-read aggregate/cache
+      — get different storage strategies
+- [x] Keeping availability fresh without hammering the DB: (a)
+      push-based update from the stream processor into the cache,
+      extending the LLD Observer pattern to network scale (b) a
+      compacted topic ("latest state per spot") as a cheap, replayable
+      rebuild source if the cache is lost (c) cache stampede /
+      thundering herd — what happens if the cache is flushed while
+      ~160k reads/sec are hitting it, and why the rebuild path (from
+      the compacted topic, not from every reader racing the raw event
+      log or DB) avoids a self-inflicted overload
+- [x] Handling flaky edge connectivity: (a) gateway-side buffering and
+      replay for a known outage (b) idempotent processing via a unique
+      id per event, so at-least-once delivery + idempotent processing
+      together behave like exactly-once (c) periodic reconciliation
+      against ground truth for the silent-drop case buffering can't
+      see coming (a sensor that never emits the "exited" event at all)
+- [x] Search fan-out: (a) geohash-prefix lookup collapsing a 2D
+      proximity query into a 1D prefix lookup (b) the boundary edge
+      case — points sharing no prefix across a cell line — fixed by
+      always querying the target cell plus its 8 neighbors (c)
+      quad-tree named as the alternative for uneven lot density, with
+      its own trade-off (adaptive depth vs. maintaining an in-memory
+      tree) (d) one batch read (`MGET`-style) against the cache
+      instead of N per-candidate round trips
 
-### 5. Trade-offs
+### 5. Trade-offs (each rendered as its own `CompareTable`, per
+CONTENT-GUIDE's "default to bullets/tables" rule)
 
 - [x] Strong consistency (reservations) vs eventual consistency (live
       occupancy) — treating both as one model wastes cost/latency on
@@ -375,3 +395,76 @@ nothing dropped. Notes:
   built.
 - LLD checklist section is unaffected by this pass — left as-is for the
   LLD lesson's own completeness pass.
+
+**`hld.mdx` — 2026-08-27 retrofit (D2 diagrams, content-format
+standard).** Walked every item in the updated "HLD Checklist" section
+above against the rewritten lesson; all checked off `[x]`, nothing
+dropped. Notes:
+
+- All Mermaid `<DiagramPanel>` diagrams converted to `<D2Diagram>`,
+  styled per the role-color table (`client`/`network`/`service`/
+  `cache`/`datastore`/`queue` fills + white font-color), verified to
+  compile via `renderD2` directly (all 6 diagrams render without
+  error).
+- The single combined architecture diagram is now two, per the updated
+  checklist: Diagram A (edge -> gateway -> event log -> stream
+  processors -> cache/DB, the ingestion pipeline) and Diagram B (client
+  -> API/gateway -> geospatial index + cache -> results, plus the
+  reservation service's separate strongly-consistent path).
+- Two new diagrams added beyond the original single architecture panel:
+  a freshness/rebuild-path diagram (stream processor -> compacted topic
+  -> cache) for the freshness deep dive, and a two-mechanism diagram
+  (gateway buffer + reconciliation job) for the flaky-edge deep dive.
+  The search fan-out deep dive also gained its own diagram (geohash
+  lookup -> neighbor-cell filter -> batch cache read), which the
+  original lesson covered in prose only. Total: 6 diagrams (5 D2
+  architecture-family + 1 D2 sequence), above the 4-5 floor.
+- Each deep dive now names its 2-4 branches explicitly via `<Point>`
+  widgets or labeled bullets, instead of one paragraph per mechanism:
+  partitioning (key choice, parallelism boundary, storage-shape split),
+  freshness (push update, compacted-topic rebuild, **cache stampede on
+  rebuild** — a genuinely new branch, added per CONTENT-GUIDE's own
+  "cache deep-dive should also touch invalidation and stampede"
+  example, and reflected as a checklist addition), flaky edge
+  (buffering, idempotent dedup as its own named branch, reconciliation),
+  search fan-out (geohash prefix, neighbor-cell fix, quad-tree
+  alternative, batch read).
+- Every number from the original capacity estimate (~12,000 facilities,
+  ~1.7M spots, ~380 events/sec, ~56,000 msgs/sec, ~160,000 reads/sec,
+  ~400:1 ratio) is preserved, now surfaced as three `<KeyStat>` widgets
+  with the same back-of-envelope math in each `detail` expando, per
+  CONTENT-GUIDE's "default to bullets/tables/KeyStat over paragraphs for
+  requirements and numbers" rule; the narrative math walk-through stays
+  in prose (the guide's own carve-out for worked numeric reasoning).
+- All three trade-offs converted from prose paragraphs to their own
+  `<CompareTable>` (consistency model, streaming-cache vs. direct-DB,
+  centralized vs. per-region ingestion), each row naming pros, cons, and
+  — for the chosen approach — `chosenBecause`, preserving every original
+  trade-off argument.
+- Recap quiz grew from 7 to 8 questions (added one on the new cache-
+  stampede branch) — within the 5-8 guideline band. All inline
+  "check yourself" `QuizItem`s from the original are preserved; two new
+  ones added after the new stampede content and the split search/
+  reservation architecture diagram.
+- The open design challenge, reference answer, and 5-item rubric are
+  unchanged verbatim — the `<Rubric>` widget now renders its own
+  `<SelfScoreBand>` from the checked-item percentage, so the manual
+  "Self-score: 5/5 ... Interview-ready" paragraph at the end of the old
+  file was dropped as redundant, not as a content cut.
+- Inline `{/* concept-dependency: ... */}` comments from the original
+  (marking not-yet-built HLD-01/03/05/06/07/10/11 concept-lesson links)
+  were dropped during the rewrite along with the sentences they
+  annotated being folded into tighter bullets/Point widgets; the
+  underlying explanations they were attached to (stateless services,
+  partitioning definition, push vs. poll, at-least-once + idempotency,
+  network partitions, geohash) are all still present in the prose/
+  bullets. Flagging this as a deliberate copy-edit, not a silent drop —
+  a future pass building those concept lessons should re-link from here
+  by searching for the relevant terms rather than relying on the old
+  comment markers.
+- Nothing from the updated HLD checklist section was dropped.
+
+Rendering not independently re-verified with Playwright in this pass
+(content-only retrofit, per CLAUDE.md's UI-verification scope note) —
+D2 compilation was verified directly via `renderD2` against all 6
+diagram sources instead, all 6 succeeded with no errors.
