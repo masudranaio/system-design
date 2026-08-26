@@ -115,35 +115,43 @@ Extended set, added later as needed per case study (not built upfront):
 
 ## 04-case-studies — starter list (expandable over time)
 
-| System | Lessons |
-|---|---|
-| URL Shortener | hld |
-| Pastebin | hld |
-| Twitter / News Feed | hld |
-| Chat / WhatsApp | hld |
-| YouTube | hld |
-| Uber / Ride-Sharing | hld |
-| Dropbox | hld |
-| Instagram | hld |
-| Rate Limiter | hld + lld |
-| Ticketmaster | hld + lld |
-| Splitwise | hld + lld |
-| Web Crawler | hld |
-| Search Autocomplete | hld |
-| Parking Lot | lld |
-| Chess | lld |
-| Elevator | lld |
-| Connect Four | lld |
-| Amazon Locker | lld |
-| Movie Ticket Booking | lld |
-| Logging Service | lld |
-| Inventory Management | lld |
-| Vending Machine | lld |
+Every case study gets both an `hld.html` and `lld.html` where a genuine
+second angle exists (which turned out to be nearly all of them — e.g. a
+logging service has both a distributed-ingestion HLD story and a
+log-entry/query LLD story). One side is **primary** (built first, the
+system's classic interview framing); the other is **secondary** (added
+later, opportunistically, once the primary side is done).
 
-The starter rows (URL Shortener, Rate Limiter, Ticketmaster, Parking Lot,
-Chess, Elevator, Splitwise, Amazon Locker) are the ones actually prioritized
-for building first; the rest are scope for later, added to this table as
-they're picked up rather than pre-built.
+| System | Primary | Secondary |
+|---|---|---|
+| URL Shortener | hld | lld — ID generation service, URL mapping schema |
+| Pastebin | hld | lld — paste/expiry schema, ID generation |
+| Twitter / News Feed | hld | lld — Tweet/Feed model classes, ranking service |
+| Chat / WhatsApp | hld | lld — message/delivery-status state machine |
+| YouTube | hld | lld — video/encoding pipeline classes, playback state |
+| Uber / Ride-Sharing | hld | lld — ride/driver/rider entity design, trip state machine |
+| Dropbox | hld | lld — file/chunk versioning classes, sync conflict resolution |
+| Instagram | hld | lld — post/feed model classes |
+| Web Crawler | hld | lld — URL frontier, crawler worker classes |
+| Search Autocomplete | hld | lld — trie/index class design |
+| Rate Limiter | hld | lld — algorithm class design (token bucket, sliding window) |
+| Ticketmaster | hld | lld — booking/seat/event schema and class design |
+| Splitwise | hld | lld — expense/balance model classes and schema |
+| Parking Lot | lld | hld — multi-location network, distributed availability service |
+| Chess | lld | hld — online multiplayer platform, matchmaking, game-state sync |
+| Elevator | lld | hld — building-network dispatch optimization at scale |
+| Connect Four | lld | hld — online multiplayer at scale |
+| Amazon Locker | lld | hld — city-wide locker network, availability tracking |
+| Movie Ticket Booking | lld | hld — booking platform at scale (overlaps Ticketmaster) |
+| Logging Service | lld | hld — distributed log ingestion/aggregation at scale |
+| Inventory Management | lld | hld — distributed inventory across warehouses |
+| Vending Machine | lld | hld — fleet monitoring/restocking at scale |
+
+The priority build order (primary side of URL Shortener, Rate Limiter,
+Ticketmaster, Parking Lot, Chess, Elevator, Splitwise, Amazon Locker first)
+stays as the actual near-term plan — see `SYLLABUS.md`. Secondary sides and
+the remaining systems are scope for later, added as they're picked up
+rather than pre-built.
 
 Each case study applies the relevant concept-module lessons (e.g. a case
 study's `lld.html` references the design patterns and database design
