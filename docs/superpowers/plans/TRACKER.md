@@ -17,8 +17,10 @@ genuinely broken. Spec/plan:
 - [x] A2. Extract shared `DiagramChrome`, build `D2Diagram` Server Component, register in MDX — **done**, merged `648567b` + controller fix `4bf4445`. Two real bugs found live-verifying the style-guide D2 demo (neither caught by unit tests): (1) D2's white canvas-background rect showed as a stray white box in dark mode — stripped server-side in `render-d2.ts`; (2) D2's outer `<svg>` has a viewBox but no width cap, so a tall/narrow diagram stretched to fill its container's width and blew up to ~2600px tall — `DiagramChrome` now caps `max-width` to the diagram's authored pixel width. Verified both themes via Playwright.
 - [x] A3. Build `TableOfContents` scroll-aware right-rail — **done**, merged `d5e6684`, later realigned to `top-16`/`4rem` (see A4).
 - [x] A4. Make `Sidebar` sticky/independently scrollable — **done**, merged `caf93a1` (real TopBar height measured live: 57px, used `top-16`/`4rem` not the plan's assumed `top-20`/`5rem`; resolved a merge conflict that had dropped the nav's border/bg/padding — restored). `TableOfContents` updated to match the same real height so both rails align.
-- [ ] A5. Wire `LessonShell` + `rehype-slug` into all 5 page routes, remove `SectionTracker` — **starting now**
-- [ ] A6. Full Playwright verification of engine + layout shell, both themes
+- [x] A5. Wire `LessonShell` + `rehype-slug` into all 5 page routes, remove `SectionTracker` — **done**, `7e6f88e`. 17/17 test files pass (SectionTracker.test.tsx correctly gone), build clean.
+- [x] A6. Full Playwright verification of engine + layout shell, both themes — **done**. Found and fixed a real bug: `TableOfContents`'s scroll-spy only read `IntersectionObserver`'s `entries` (which reports only headings whose state *changed* since the last check), so a fast/instant scroll spanning multiple headings left it frozen on a stale section — confirmed live (jumped to y=3500, rail stayed stuck on "Problem framing" through 3 further sections). Rewrote to always recompute the active heading from every heading's real `getBoundingClientRect()` position, triggered by IO + scroll + resize. Verified fixed live, plus click-to-jump, both themes, 1024/768/375 viewports (no overflow at any), mobile nav, zero console errors, `pnpm test`/`pnpm build` clean, `d2.wasm`/`@terrastruct` confirmed absent from `.next/static/chunks/`.
+
+**Phase A complete.** All 6 D2-engine/layout-shell tasks done.
 
 **Phase B — Retrofit the 3 existing case studies (D2 diagrams, new content standard)**
 - [ ] B1. Ticketmaster `hld.mdx`

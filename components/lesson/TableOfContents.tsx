@@ -20,17 +20,53 @@ export function TableOfContents({ containerId }: { containerId: string }) {
     setHeadings(nodes.map((node) => ({ id: node.id, text: node.textContent ?? "" })));
     if (nodes.length === 0) return;
 
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const visible = entries.filter((entry) => entry.isIntersecting);
-        if (visible.length > 0) {
-          setActiveId(visible[0].target.id);
+    // A heading is "active" once it's scrolled up to this line from the
+    // top of the viewport (matches the sticky rail's top-16/4rem offset
+    // plus a small buffer).
+    const ACTIVE_LINE_PX = 112;
+
+    // IntersectionObserver's callback only reports the headings whose
+    // intersecting state *changed* since the last check, not the full
+    // current state of every observed heading — so picking activeId from
+    // `entries` alone breaks on a fast or instant scroll (e.g. a TOC
+    // click, or window.scrollTo) that jumps past several headings in one
+    // frame: the skipped headings never appear in any entries list, and
+    // activeId freezes on a stale heading. Confirmed live: scrolling deep
+    // into a lesson left the rail stuck highlighting the first section.
+    // Fixing this by always recomputing from every heading's real
+    // position (getBoundingClientRect) rather than trusting which
+    // headings happened to be reported as changed.
+    let ticking = false;
+    function updateActive() {
+      ticking = false;
+      let current = nodes[0]?.id ?? null;
+      for (const node of nodes) {
+        if (node.getBoundingClientRect().top <= ACTIVE_LINE_PX) {
+          current = node.id;
+        } else {
+          break;
         }
-      },
-      { rootMargin: "-96px 0px -70% 0px" },
-    );
+      }
+      setActiveId(current);
+    }
+    function scheduleUpdate() {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(updateActive);
+    }
+
+    updateActive();
+    const observer = new IntersectionObserver(scheduleUpdate, {
+      rootMargin: "-96px 0px -70% 0px",
+    });
     nodes.forEach((node) => observer.observe(node));
-    return () => observer.disconnect();
+    window.addEventListener("scroll", scheduleUpdate, { passive: true });
+    window.addEventListener("resize", scheduleUpdate);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("scroll", scheduleUpdate);
+      window.removeEventListener("resize", scheduleUpdate);
+    };
   }, [containerId]);
 
   if (headings.length === 0) return null;
