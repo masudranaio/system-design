@@ -38,7 +38,7 @@ export function TableOfContents({ containerId }: { containerId: string }) {
   return (
     <nav
       aria-label="On this page"
-      className="sticky top-20 hidden max-h-[calc(100vh-5rem)] w-56 shrink-0 overflow-y-auto xl:block"
+      className="sticky top-16 hidden max-h-[calc(100vh-4rem)] w-56 shrink-0 overflow-y-auto xl:block"
     >
       <p className="font-mono text-xs font-semibold tracking-wide text-muted-foreground uppercase">
         On this page
