@@ -23,21 +23,21 @@ genuinely broken. Spec/plan:
 **Phase A complete.** All 6 D2-engine/layout-shell tasks done.
 
 **Phase B — Retrofit the 3 existing case studies (D2 diagrams, new content standard)**
-- [ ] B1. Ticketmaster `hld.mdx`
-- [ ] B2. Ticketmaster `lld.mdx`
-- [ ] B3. Parking Lot `hld.mdx`
-- [ ] B4. Parking Lot `lld.mdx`
-- [ ] B5. Amazon Locker `hld.mdx`
-- [ ] B6. Amazon Locker `lld.mdx`
+- [ ] B1. Ticketmaster `hld.mdx` — dispatched
+- [ ] B2. Ticketmaster `lld.mdx` — dispatched
+- [ ] B3. Parking Lot `hld.mdx` — dispatched
+- [ ] B4. Parking Lot `lld.mdx` — dispatched
+- [ ] B5. Amazon Locker `hld.mdx` — dispatched
+- [ ] B6. Amazon Locker `lld.mdx` — dispatched
 
 **Phase C — 7 new case studies (checklist + full lesson each)**
-- [ ] C1. Ride-Sharing (CS-09) `hld.mdx`
-- [ ] C2. Netflix (CS-10) `hld.mdx`
-- [ ] C3. Food Panda (CS-11) `hld.mdx`
-- [ ] C4. Event Tracking System (CS-12) `lld.mdx`
-- [ ] C5. Notification Service (CS-13) `lld.mdx`
-- [ ] C6. Dropbox (new CS-14) `hld.mdx`
-- [ ] C7. Chat/WhatsApp (new CS-15) `hld.mdx`
+- [ ] C1. Ride-Sharing (CS-09) `hld.mdx` — dispatched
+- [ ] C2. Netflix (CS-10) `hld.mdx` — dispatched
+- [ ] C3. Food Panda (CS-11) `hld.mdx` — dispatched
+- [ ] C4. Event Tracking System (CS-12) `lld.mdx` — dispatched
+- [ ] C5. Notification Service (CS-13) `lld.mdx` — dispatched
+- [ ] C6. Dropbox (new CS-14) `hld.mdx` — dispatched
+- [ ] C7. Chat/WhatsApp (new CS-15) `hld.mdx` — dispatched
 
 **Phase D — Visual verification pass, both themes**
 - [ ] D1. Visual pass: 7 new lessons
