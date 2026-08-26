@@ -13,7 +13,7 @@ values: `Not started`, `In progress`, `Completed`.
 | Next.js App Shell + Component Library | [2026-08-26-nextjs-app-shell-implementation.md](2026-08-26-nextjs-app-shell-implementation.md) | **Completed** | — | 9 tasks, one commit each: `4163129` scaffold, `5af4ca3` shadcn/ui (button+checkbox), `ff214d5` tokens/fonts/theme, `56984df` QuizItem, `0dcf4a8` Rubric+SelfScoreBand, `ad409ea` DiagramPanel, `0c435e0` SectionTracker, `9cef3f5` app shell, `fcbf8c5` home+style-guide. 10/10 tests pass, `pnpm build` clean. Playwright-verified in both light and dark theme on `/` and `/style-guide` (home page, theme toggle, quiz reveal, rubric→self-score-band, mermaid render) — once by the implementer, once independently by the controller. shadcn/ui now scaffolds Base UI (not Radix) primitives; APIs stayed compatible. |
 | Content Pipeline, MDX Rendering, and Search | [2026-08-26-nextjs-content-pipeline-implementation.md](2026-08-26-nextjs-content-pipeline-implementation.md) | **Completed** | App Shell plan (above) — Completed | 6 commits: `e52187c` lib/content.ts, `65366a8` mdx-components, `6474418` 5 dynamic routes, `0c7999c` Sidebar on real nav tree, `2ac328e` search index script, `0a74695` SearchDialog+TopBar (fixed a real shadcn `CommandDialog` bug: it wasn't wrapping children in `<Command>`, breaking cmdk's context). Task 7 (fixture-based e2e check) left no diff to commit — fixture created, verified, deleted, `content/` untouched. 17/17 tests pass, `pnpm build` clean (one pre-existing Next.js advisory warning about dynamic fs tracing in `lib/content.ts`, not an error — worth a follow-up `turbopackIgnore` scoping pass later, not blocking). Playwright-verified in both themes by the implementer and independently by the controller: sidebar nav tree, dynamic route rendering (diagram/quiz/rubric), and the new SearchDialog (Search button + Ctrl+K, live filtering, correct empty state) all confirmed in light and dark. Minor cosmetic nit noted, not fixed: the search dialog's empty state renders a stray empty "Lessons" group heading under "No lessons found." — harmless once real content exists, low priority. |
 | Parking Lot + Amazon Locker Checklists | [2026-08-26-parking-lot-amazon-locker-checklists.md](2026-08-26-parking-lot-amazon-locker-checklists.md) | **Completed** | — | Produced `content/04-case-studies/parking-lot/CHECKLIST.md` (CS-03, commit `0ddfbcd`) and `content/04-case-studies/amazon-locker/CHECKLIST.md` (CS-06, commit `1c726da`), both matching Ticketmaster's structure; all relative links verified. |
-| UI/UX Modernization Pass | — (no written plan doc; dispatched directly per user request) | **In progress** | App Shell + Content Pipeline plans — Completed | User flagged the shipped shell as visually bare ("1900s website"). Design tokens (teal-on-cool-paper, IBM Plex Mono + Source Serif 4) are kept as-is — the gap is execution polish, not palette. Scope: TopBar (sticky/blur, logo mark, styled search trigger, icon theme toggle), Sidebar (icons, active-route state, hover), Homepage (hero + module card grid replacing bullet list), on-brand 404, spacing/elevation/focus-state pass. `lucide-react` already a dependency. Dispatched as one agent touching only shared shell files (`app/`, `components/nav/*`, `components/search/*`, `app/page.tsx`, `app/not-found.tsx`) — no overlap with Track B content files. |
+| UI/UX Modernization Pass | — (no written plan doc; dispatched directly per user request) | **In progress — drafted, build/tests green, Playwright unverified** | App Shell + Content Pipeline plans — Completed | User flagged the shipped shell as visually bare ("1900s website"). Design tokens (teal-on-cool-paper, IBM Plex Mono + Source Serif 4) kept as-is — the gap is execution polish, not palette. Delivered: sticky/blur TopBar with logomark + styled search trigger (icon + kbd hint), icon-based theme toggle, Sidebar section icons + active-route highlighting (new `components/nav/SidebarNav.tsx` client component + `lib/nav-icons.tsx`), hero + module-card-grid homepage (new `components/ui/card.tsx`), on-brand `app/not-found.tsx`. Commit `80ffe04`, merged via `ecc5dde`. `pnpm build` clean (2 pre-existing non-blocking dynamic-fs-tracing warnings only), 17/17 tests pass post-merge. **Not yet done:** the implementer agent was killed by the account's API spend limit mid-Playwright-verification (before self-reporting or committing) — controller committed/merged its file changes directly from the worktree, confirmed build+tests, but has NOT yet independently driven Playwright in both themes per CLAUDE.md's UI verification rule. That check is still outstanding. |
 
 ## Content-authoring tasks (not SDD plans)
 
@@ -25,12 +25,29 @@ numbered plan tasks.
 
 | Task | Status | Depends on | Notes |
 |---|---|---|---|
-| Ticketmaster `hld.mdx` | In progress | Content Pipeline plan (above) — needs a working MDX pipeline to author against | Content plan already exists: [content/04-case-studies/ticketmaster/CHECKLIST.md](../../content/04-case-studies/ticketmaster/CHECKLIST.md) |
-| Ticketmaster `lld.mdx` | In progress | Content Pipeline plan (above) | Same checklist as above |
-| Parking Lot `lld.mdx` (primary) | In progress | Content Pipeline plan (above) | Checklist ready: [content/04-case-studies/parking-lot/CHECKLIST.md](../../content/04-case-studies/parking-lot/CHECKLIST.md) |
-| Parking Lot `hld.mdx` (secondary) | In progress | Same as above | — |
-| Amazon Locker `lld.mdx` (primary) | In progress | Content Pipeline plan (above) | Checklist ready: [content/04-case-studies/amazon-locker/CHECKLIST.md](../../content/04-case-studies/amazon-locker/CHECKLIST.md) |
-| Amazon Locker `hld.mdx` (secondary) | In progress | Same as above | — |
+| Ticketmaster `hld.mdx` | Drafted, unverified (579 lines) | Content Pipeline plan (above) — needs a working MDX pipeline to author against | Commit `d4ad156`, merged via `11b19e4`. Checklist: [content/04-case-studies/ticketmaster/CHECKLIST.md](../../content/04-case-studies/ticketmaster/CHECKLIST.md) |
+| Ticketmaster `lld.mdx` | Drafted, unverified (625 lines) | Content Pipeline plan (above) | Commit `a16cee0`, merged via `340eba5`. Same checklist as above |
+| Parking Lot `lld.mdx` (primary) | Drafted, unverified (700 lines) | Content Pipeline plan (above) | Commit `2faad7a`, merged via `2e64018`. Checklist: [content/04-case-studies/parking-lot/CHECKLIST.md](../../content/04-case-studies/parking-lot/CHECKLIST.md) |
+| Parking Lot `hld.mdx` (secondary) | Drafted, unverified (546 lines) | Same as above | Commit `b8f510b`, merged via `ac4a8c7` (conflicted with the LLD agent's edit to the shared `CHECKLIST.md` status line — resolved by the controller to state both sides built). |
+| Amazon Locker `lld.mdx` (primary) | Drafted, unverified (675 lines) | Content Pipeline plan (above) | Commit `f70b096`, merged via `893f6db`. Checklist: [content/04-case-studies/amazon-locker/CHECKLIST.md](../../content/04-case-studies/amazon-locker/CHECKLIST.md) |
+| Amazon Locker `hld.mdx` (secondary) | Drafted, unverified (602 lines) | Same as above | Commit `4f4ac30`, merged via `7bdf39f`. |
+
+**Spend-limit interruption (2026-08-26, ~10pm Asia/Dhaka):** all 7 agents
+dispatched for this pass (6 content + 1 UI) were killed mid-task by the
+account's API spend limit before any of them could commit their own work
+or finish self-verification — each had already fully drafted its file(s)
+in an isolated git worktree, so nothing was lost. The controller committed
+each worktree's uncommitted changes directly, merged all 7 branches into
+master (one real conflict: both Parking Lot agents edited the same
+`CHECKLIST.md` status line, resolved manually), confirmed `pnpm build` and
+the full test suite (17/17) are clean post-merge, and cleaned up the
+worktrees/branches. **Not done yet:** per-lesson completeness-pass
+confirmation (each `CHECKLIST.md`'s checkboxes/log — spot-checked for
+Parking Lot only, not the other four files) and the CLAUDE.md-required
+Playwright render/both-theme verification for every new route. Both were
+mid-flight in the killed agents and still need a pass — either by the
+controller now, or after the spend limit resets (10:10pm Asia/Dhaka) if
+it's hit again.
 
 **Ruling (2026-08-26):** all 6 rows above depend per `content/04-case-studies/SYLLABUS.md`
 on HLD/LLD concept lessons (HLD-01/03/06/07/10, LLD-01–06) that don't exist yet
