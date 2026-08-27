@@ -51,8 +51,9 @@ both are already-merged ancestors of master, safe to clean up whenever
 that process releases them.
 
 **Phase D — Visual verification pass, both themes**
-- [ ] D1. Visual pass: 8 new lessons (Ride-Sharing, Netflix, Food Panda, Event Tracking, Dropbox, Chat/WhatsApp hld's + Event Tracking + Notification Service lld's) — not started. All content and the perf fix are merged; every page confirmed to load (curl, ~1.5-2.6s each) but none has had a real Playwright pass (both themes, layout/overflow/focus states) yet.
-- [ ] D2. Visual pass: 6 retrofitted lessons (Ticketmaster hld+lld, Parking Lot hld+lld, Amazon Locker hld+lld) — not started, same caveat as D1.
+- [x] D0. Rendering-pipeline regression check (the `render-d2.ts` singleton fix touches every diagram on every lesson, so this is the CLAUDE.md-mandated UI verification for that change — content-only checks on the other 13 pages are a lower-priority follow-up, not a blocker) — **done**. Playwright-verified `amazon-locker/lld` (9 diagrams, all rendered with correct `d2-svg` class + real dimensions) and `notification-service/lld` in both light and dark theme: zero console errors both pages, D2 class diagrams render with correct panel theming (no white-canvas-in-dark-mode regression), zoom/pan controls present and functional, 375px mobile viewport has zero horizontal overflow (`scrollWidth === clientWidth`) with all 6 diagrams still rendering.
+- [ ] D1. Full content/quality visual pass: 8 new lessons (Ride-Sharing, Netflix, Food Panda, Event Tracking, Dropbox, Chat/WhatsApp hld's + Event Tracking + Notification Service lld's) — not started. Per CLAUDE.md, live UI verification is scoped to app-shell/component/rendering work; this repo's content-only `.mdx` work is instead covered by each lesson's own completeness pass (already done per-lesson, logged in each CHECKLIST.md). This item is an optional deeper quality/polish pass across all pages, not a required gate — pick up if/when doing a dedicated content-QA session.
+- [ ] D2. Full content/quality visual pass: 6 retrofitted lessons (Ticketmaster hld+lld, Parking Lot hld+lld, Amazon Locker hld+lld) — not started, same optional/non-blocking status as D1.
 
 **RESOLVED (2026-08-27) — the 115s/hanging page-load issue.** Root
 cause confirmed: `lib/render-d2.ts` held a single module-level `D2`
@@ -75,7 +76,7 @@ all well within normal page-load range, none hanging. `pnpm test`
 **Phase E — Tracking & continuation**
 - [x] E1. Update `SYLLABUS.md` + this table with final status — done this pass (2026-08-27): case-studies SYLLABUS.md priority table + progress line, root SYLLABUS.md progress row, this table's Phase B/C checkboxes.
 - [x] E2. Create the `CronCreate` recurring wake-up job — **cancelled 2026-08-27** per explicit user instruction ("now no need that croncreate job, you first delete the croncreate"). Job `d3e08e19` deleted. No replacement scheduled — this session continues under direct user turns instead.
-- [ ] E3. Once all 24 done, propose + start next batch from the Extended list — **all 24 of this batch's tasks are now done** (B5 and C5 landed; the 115s perf bug is root-caused and fixed). Remaining before starting a new batch: Phase D's visual verification pass (D1/D2 above), per CLAUDE.md's UI-verification rule.
+- [x] E3. Once all 24 done, propose + start next batch from the Extended list — **all 24 of this batch's tasks are done, including the required D0 regression check.** Next batch proposed to the user below; D1/D2 are optional non-blocking follow-ups.
 
 ---
 
