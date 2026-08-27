@@ -204,6 +204,20 @@ export function DiagramChrome({
             onPointerMove={panZoom.bind.onPointerMove}
             onPointerUp={panZoom.bind.onPointerUp}
           >
+            {/* The scale/pan transform must live on this content div, not
+                on the overflow-auto scroll container above — a transform
+                on the same element that owns the scroll clipping is
+                self-referential: it repaints the whole clipped viewport
+                (and its content) uniformly smaller/larger without ever
+                changing what fraction of the content is visible.
+                Confirmed live: with the transform on the scroll div,
+                scale changes left scrollWidth/clientWidth unchanged, so
+                zoom-out (and fit-to-width) never revealed more of a wide
+                diagram — just a smaller repaint of the same crop.
+                Transforming this inner div instead lets the browser
+                compute the scroll container's scrollable-overflow region
+                from the transformed content, so zoom and fit-to-width
+                actually change how much is visible. */}
             <div
               ref={containerRef}
               role="img"
@@ -235,6 +249,12 @@ export function DiagramChrome({
             onPointerMove={fullscreenPanZoom.bind.onPointerMove}
             onPointerUp={fullscreenPanZoom.bind.onPointerUp}
           >
+            {/* Same reasoning as the inline panel above: the transform
+                must stay on this content div, not on the overflow-auto
+                scroll container it sits inside — applying it to the
+                scroll container itself is self-referential and never
+                changes what fraction of the diagram is visible (confirmed
+                live). */}
             <div
               ref={setFullscreenContainer}
               role="img"
