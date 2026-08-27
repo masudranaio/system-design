@@ -70,97 +70,190 @@ from the LLD is just one component running inside each station.
 - Prime-Day-style events causing **10-20x** volume spikes in affected
   metros
 
-**Back-of-envelope math for the 500,000 QPS peak.** Start from the
-network's baseline write volume — actual completed deposits and pickups
-— at roughly 2,000 events/sec across the whole network on an ordinary
-day. Every completed event is preceded by many availability reads:
-a customer pans a map, filters by size, and often re-checks after a
-first choice turns out full by the time they tap "reserve." Call that
-read amplification ~15x, which puts baseline read traffic on the
-availability path around 30,000 QPS. Layer a Prime-Day-style spike of
-~17x (inside the stated 10-20x range) on top of that baseline, and the
-peak lands at roughly 30,000 × 17 ≈ **500,000 QPS** — which is why the
-read path, not the write path, is what has to survive the event (more
-on that in the worked example).
+**Out of scope for this lesson:** payment processing for locker rental,
+full account/auth internals, notification-delivery internals (SMS vs.
+push vs. email), and route optimization for delivery agents — these are
+services this design calls into, not sections it designs.
 
-**Back-of-envelope math for network capacity.** Assume the network
-operates on the order of 5,000 stations (consistent with "thousands").
-At an average of 90 compartments/station (midpoint of the 30-150 range),
-that's **450,000 compartments** network-wide — roughly 180,000 small,
-157,500 medium, 90,000 large, and 22,500 oversized, following the stated
-size mix. That total is the ceiling the caching and reservation design
-below has to serve queries against without hitting the database on
-every read.
+<KeyStat
+  value="~500,000 QPS"
+  label="Peak availability-query load"
+  detail="Baseline write volume (actual deposits/pickups) runs ~2,000 events/sec network-wide. Each completed event is preceded by many availability reads — a customer pans a map, filters by size, re-checks after a first choice fills up — call that read amplification ~15x, putting ordinary-day read traffic around 30,000 QPS. Layer a Prime-Day-style ~17x spike (inside the stated 10-20x range) on top: 30,000 x 17 ≈ 500,000 QPS. The read path, not the write path, is what has to survive the event."
+/>
+
+<KeyStat
+  value="~450,000 compartments"
+  label="Network-wide compartment inventory"
+  detail="~5,000 stations (consistent with 'thousands') x 90 compartments/station (midpoint of the 30-150 range) ≈ 450,000 compartments — roughly 180,000 small, 157,500 medium, 90,000 large, 22,500 oversized, following the stated size mix. That total is the ceiling the caching and reservation design below has to serve queries against without hitting the database on every read."
+/>
 
 ## Core content
 
 ### Network architecture
 
-<DiagramPanel
+Splitting the network into three focused diagrams — request routing,
+the data/cache tier, and the IoT fleet channel — instead of one large
+one; each carries its own explanatory weight and the IoT channel in
+particular solves a different problem (device connectivity, not request
+routing) than the other two.
+
+<D2Diagram
+  title="Client and service layer"
   type="architecture"
-  title="Amazon Locker network — service and data layers"
-  chart={`graph TD
-  subgraph Clients
-    CustomerApp[Customer App]
-    AgentApp[Delivery Agent App]
-    Kiosk[In-Station Touchscreen]
-  end
+  chart={`direction: right
 
-  subgraph Edge
-    GW[API Gateway]
-  end
+CustomerApp: Customer App {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+AgentApp: Delivery Agent App {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+Kiosk: In-Station Touchscreen {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+GW: API Gateway {
+  style.fill: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+LMS: Locker Management Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+CRS: Capacity Reservation Service (hot path) {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+PKGS: Package Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+AuthS: Auth Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+NotifS: Notification Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+RetS: Returns Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
 
-  subgraph Services[Core microservices]
-    LMS[Locker Management Service<br/>station and compartment state, health]
-    CRS[Capacity Reservation Service<br/>hot path]
-    PKGS[Package Service<br/>package lifecycle]
-    AUTHS[Auth Service]
-    NOTIF[Notification Service]
-    RETS[Returns Service]
-  end
-
-  subgraph CacheTier[Multi-level cache]
-    L1[L1 in-process cache]
-    L2[L2 Redis / Memcached]
-    L3[L3 regional snapshot cache]
-  end
-
-  subgraph DataTier[Geo-sharded data layer]
-    PG[(Postgres, geo-sharded)]
-    TSDB[(Time-series store: telemetry)]
-  end
-
-  subgraph Fleet[Locker IoT fleet]
-    Station[Locker Station]
-  end
-
-  CustomerApp --> GW
-  AgentApp --> GW
-  Kiosk --> GW
-  GW --> LMS
-  GW --> CRS
-  GW --> PKGS
-  GW --> AUTHS
-  GW --> RETS
-  CRS --> L1 --> L2 --> L3 --> PG
-  LMS --> PG
-  PKGS --> PG
-  RETS --> PG
-  LMS --> TSDB
-  PKGS --> NOTIF
-  RETS --> NOTIF
-  Station -- MQTT telemetry: heartbeat, door sensors, power, firmware version --> LMS
-  CRS -- unlock command, sync, TLS/X.509 device auth --> Station
+CustomerApp -> GW
+AgentApp -> GW
+Kiosk -> GW
+GW -> LMS: station/compartment state, health
+GW -> CRS: reserve/availability, 500K QPS peak
+GW -> PKGS: package lifecycle
+GW -> AuthS
+GW -> RetS
+PKGS -> NotifS: deposit/pickup events
+RetS -> NotifS: return-ready events
 `}
 />
 
 _The gateway fans requests out to five focused services instead of one
-monolith; the reservation path gets its own service and cache stack
-because it alone has to sustain 500,000 QPS, while station telemetry
-flows over a separate async channel so a spike in device chatter can't
-compete with customer-facing reads._
+monolith. Capacity Reservation Service gets its own hot-path lane
+because it alone has to sustain 500,000 QPS; Locker Management, Package,
+Auth, and Returns run at far lower frequency and would only add
+contention if they shared a connection pool with reservation._
 
-Two design choices are doing the heavy lifting here:
+<D2Diagram
+  title="Cache and data tier"
+  type="architecture"
+  chart={`direction: right
+
+CRS: Capacity Reservation Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+LMS: Locker Management Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+PKGS: Package Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+RetS: Returns Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+L1: L1 in-process cache {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+L2: L2 Redis {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+L3: L3 regional snapshot {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+PG: Postgres, geo-sharded {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+TSDB: Time-series store (telemetry) {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+
+CRS -> L1 -> L2 -> L3 -> PG: cache-miss fallthrough
+LMS -> PG: station/compartment config
+PKGS -> PG: package records
+RetS -> PG: return records
+LMS -> TSDB: heartbeat, door sensors, power
+`}
+/>
+
+_Two data stores, not one: Postgres holds transactional state where
+correctness beats write throughput, and a time-series store holds
+telemetry, where writes are small, high-volume, and almost always
+queried as "show me the last N minutes for station X" — a shape
+relational tables handle poorly at fleet scale._
+
+<D2Diagram
+  title="IoT fleet connectivity"
+  type="architecture"
+  chart={`direction: right
+
+Station: Locker Station {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+LMS: Locker Management Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+CRS: Capacity Reservation Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+TSDB: Time-series store {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+
+Station -> LMS: MQTT telemetry (heartbeat, door sensors, power, firmware version)
+LMS -> TSDB: write
+CRS -> Station: unlock command + sync, TLS/X.509 device auth
+`}
+/>
+
+_Station telemetry flows over its own async channel so a spike in
+device chatter can't compete with customer-facing reservation traffic
+for the same connection pool — the reasoning behind splitting Capacity
+Reservation Service out from Locker Management Service in the first
+diagram, restated for the fleet side._
+
+Two design choices are doing the heavy lifting across these three
+diagrams:
 
 - **Capacity Reservation Service is split out from Locker Management
   Service**, even though both ultimately touch compartment state.
@@ -169,13 +262,9 @@ Two design choices are doing the heavy lifting here:
   station-health and configuration operations. Splitting them means a
   burst of device telemetry or a firmware rollout can't compete for the
   same connection pool as a customer trying to reserve a compartment.
-- **Two data stores, not one.** Postgres holds transactional state
-  (compartments, packages, reservations) where correctness matters more
-  than write throughput. A time-series store holds telemetry (heartbeat,
-  door-sensor events, battery voltage) where the write volume is high,
-  each point is small, and queries are almost always "show me the last N
-  minutes for station X" — a shape relational tables handle poorly at
-  IoT-fleet scale.
+- **Two data stores, not one.** Postgres for transactional correctness,
+  a time-series store for high-volume small-point telemetry — detailed
+  above.
 
 <QuizItem
   question="Why does the Capacity Reservation Service sit on its own hot path separate from Locker Management Service, even though both touch compartment state?"
@@ -195,33 +284,95 @@ instead of a geometric scan over every station's coordinates.
 
 {/* concept-dependency: HLD-11 not yet built, explained inline */}
 
+<D2Diagram
+  title="Geohash prefix lookup vs. geometric scan"
+  type="architecture"
+  chart={`direction: right
+
+Query: "Within 2 miles of (30.27, -97.74)"
+Naive: Geometric distance scan (all 450K compartments) {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+Geohash: "Geohash prefix index lookup (9v6k...)" {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+Result: Matching stations, ranked
+
+Query -> Naive: O(n) scan, too slow at 500K QPS
+Query -> Geohash: indexed prefix seek
+Geohash -> Result
+`}
+/>
+
+_The naive scan and the geohash path both answer the same query — the
+diagram exists to make the "why not just scan" question concrete rather
+than asserted._
+
 Once a customer picks a station, the reservation itself has to survive
-concurrent attempts. The design uses **optimistic concurrency control
-(OCC)**: every compartment row carries a `version` number; a reservation
-reads the current version, then issues `UPDATE compartments SET status
-= 'reserved', version = version + 1 WHERE id = ? AND version = ?`. If
-another request already reserved that compartment, the version no
-longer matches, the update affects zero rows, and the service returns a
-conflict — the customer is shown the next-nearest match instead. This is
-deliberately chosen over a **pessimistic lock** (acquire a lock on the
-row, block other requests, release after the transaction): pessimistic
-locking pays a blocking cost on *every* request in exchange for
-correctness that's only actually needed on the rare request that
-collides. Given that any single compartment is contended by two
-customers only occasionally, OCC pays the cost — a retry — only when a
-collision actually happens.
+concurrent attempts. Three mechanisms work together, each solving a
+different layer of the contention problem:
+
+- **Optimistic concurrency control (OCC).** Every compartment row
+  carries a `version` number; a reservation reads the current version,
+  then issues `UPDATE compartments SET status = 'reserved', version =
+  version + 1 WHERE id = ? AND version = ?`. If another request already
+  reserved that compartment, the version no longer matches, the update
+  affects zero rows, and the service returns a conflict — the customer
+  is shown the next-nearest match instead.
+- **Why OCC over a pessimistic lock.** A pessimistic lock (acquire a
+  lock on the row, block other requests, release after the transaction)
+  pays a blocking cost on *every* request in exchange for correctness
+  that's only actually needed on the rare request that collides. Given
+  that any single compartment is contended by two customers only
+  occasionally, OCC pays the cost — a retry — only when a collision
+  actually happens.
+- **Regional reservation queues at extreme throughput.** Even OCC needs
+  help at 500,000 QPS: if every reservation attempt across the whole
+  network competes for connections against every other attempt, the
+  database connection pool becomes the bottleneck regardless of how
+  cheap each individual update is. The design pre-allocates regional
+  reservation queues — requests are bucketed by geographic region
+  (roughly metro-area granularity) into separate worker pools, so
+  contention is bounded to reservations that could plausibly collide
+  (same station, same region) rather than serialized against unrelated
+  reservations on the other side of the country.
 
 {/* concept-dependency: HLD-10 not yet built, explained inline */}
 
-At extreme throughput, even OCC needs help: if every reservation attempt
-across the whole network competes for connections against every other
-attempt, the database connection pool becomes the bottleneck regardless
-of how cheap each individual update is. The design pre-allocates
-**regional reservation queues** — requests are bucketed by geographic
-region (roughly metro-area granularity) into separate worker pools, so
-contention is bounded to reservations that could plausibly collide (same
-station, same region) rather than serialized against unrelated
-reservations on the other side of the country.
+<D2Diagram
+  title="Optimistic concurrency: two customers, one compartment"
+  type="sequence"
+  chart={`shape: sequence_diagram
+
+CustomerA: Customer A {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+CustomerB: Customer B {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+CRS: Capacity Reservation Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+PG: Postgres compartment row (v=3) {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+
+CustomerA -> CRS: reserve(compartmentId), read version=3
+CustomerB -> CRS: reserve(compartmentId), read version=3
+CRS -> PG: "UPDATE ... SET version=4 WHERE version=3 (A)"
+PG -> CRS: 1 row updated, version now 4
+CRS -> CustomerA: reservation confirmed
+CRS -> PG: "UPDATE ... SET version=4 WHERE version=3 (B)"
+PG -> CRS: 0 rows updated, version already 4
+CRS -> CustomerB: 409 conflict, next-nearest offered
+`}
+/>
 
 <QuizItem
   question="Two customers in the same city both try to reserve the last available medium compartment at the same station within a 50ms window. Under optimistic concurrency control, what happens?"
@@ -232,23 +383,44 @@ reservations on the other side of the country.
 
 At 500,000 QPS peak with a sub-100ms target, hitting Postgres on every
 availability read is not an option — even a well-indexed geo-sharded
-query at that volume saturates connection pools long before it saturates
-disk I/O. The design layers four tiers between the customer and the
-source of truth:
+query at that volume saturates connection pools long before it
+saturates disk I/O. A real caching deep dive needs more than "put Redis
+in front of it": tier design, write propagation, and stampede risk are
+three separate mechanisms, and an interview conversation branches into
+all three.
 
-<DiagramPanel
+<D2Diagram
+  title="Availability query — four-tier cache read path"
   type="architecture"
-  title="Availability query — cache read path"
-  chart={`graph LR
-  Req[Availability query] --> L1{L1 in-process cache<br/>TTL 5-10s}
-  L1 -- hit, less than 1ms --> Resp[Response]
-  L1 -- miss --> L2{L2 Redis<br/>write-through}
-  L2 -- hit, 1-5ms --> Resp
-  L2 -- miss --> L3{L3 regional snapshot<br/>refreshed every 5-15s}
-  L3 -- hit --> Resp
-  L3 -- miss or stale --> L4[(L4 geo-sharded Postgres<br/>source of truth)]
-  L4 --> Backfill[Backfill L1, L2, L3]
-  Backfill --> Resp
+  chart={`direction: right
+
+Req: Availability query
+L1: L1 in-process (under 1ms, TTL 5-10s) {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+L2: L2 Redis (1-5ms, write-through) {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+L3: L3 regional snapshot (refreshed 5-15s) {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+L4: L4 geo-sharded Postgres, source of truth {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+Resp: Response
+
+Req -> L1
+L1 -> Resp: hit
+L1 -> L2: miss
+L2 -> Resp: hit
+L2 -> L3: miss
+L3 -> Resp: hit
+L3 -> L4: miss or stale
+L4 -> Resp: backfill L1, L2, L3
 `}
 />
 
@@ -262,17 +434,30 @@ answer directly._
 {/* concept-dependency: HLD-06 not yet built, explained inline */}
 {/* concept-dependency: HLD-07 not yet built, explained inline */}
 
-L2 uses **write-through** caching: when a reservation changes a
-compartment's status, the write goes to Redis and Postgres together
-(rather than **cache-aside**, where the cache is only populated lazily
-on the next read miss), because a reservation-critical path can't afford
-to serve a stale "available" answer to the very next customer who reads
-it. L4, Postgres, is **geo-sharded** — partitioned by region so a query
-for Chicago-area lockers only ever touches the Chicago shard's data and
-its read replicas, never scanning rows for stations 2,000 miles away.
-That >95% cache hit rate target means fewer than 1 in 20 requests ever
-reaches L4 at all; the shard layout is there for the requests that do,
-and for the L3 snapshot jobs that periodically rebuild from it.
+**Branch 1 — write propagation.** L2 uses **write-through** caching:
+when a reservation changes a compartment's status, the write goes to
+Redis and Postgres together (rather than **cache-aside**, where the
+cache is only populated lazily on the next read miss), because a
+reservation-critical path can't afford to serve a stale "available"
+answer to the very next customer who reads it.
+
+**Branch 2 — geo-sharding at the source of truth.** L4, Postgres, is
+**geo-sharded** — partitioned by region so a query for Chicago-area
+lockers only ever touches the Chicago shard's data and its read
+replicas, never scanning rows for stations 2,000 miles away. That >95%
+cache hit rate target means fewer than 1 in 20 requests ever reaches L4
+at all; the shard layout is there for the requests that do, and for the
+L3 snapshot jobs that periodically rebuild from it.
+
+**Branch 3 — cache stampede risk on a hot metro.** If a heavily-trafficked
+region's L3 snapshot expires right as a Prime-Day-style spike hits it,
+every request that misses in that instant could hit L4 simultaneously.
+The mitigation is a single-flight recompute: only one request per
+region rebuilds the L3 snapshot on a miss, while the rest keep serving
+the (seconds-stale) snapshot they already have until the rebuild
+completes — the same technique used for hot-key stampedes in any
+high-QPS cache-aside system, applied here to a regional snapshot instead
+of a single key.
 
 <QuizItem
   question="Why does the L3 regional snapshot exist at all if L2 Redis already caches the same underlying data?"
@@ -283,46 +468,93 @@ and for the L3 snapshot jobs that periodically rebuild from it.
 
 Every station is a physical device on a cellular or Wi-Fi uplink, and at
 fleet scale some stations are always mid-reconnect. Two channels connect
-a station to the rest of the system:
+a station to the rest of the system, covered in the architecture
+diagrams above:
 
 - An **asynchronous telemetry channel over MQTT** — a lightweight
   publish/subscribe protocol built for devices with intermittent
-  connectivity and limited bandwidth. Stations publish heartbeat, door-sensor
-  events, power status, and firmware version; the Locker Management
-  Service subscribes and writes them into the time-series store.
+  connectivity and limited bandwidth. Stations publish heartbeat,
+  door-sensor events, power status, and firmware version; the Locker
+  Management Service subscribes and writes them into the time-series
+  store.
 - A **synchronous unlock-command path**, authenticated per-device with
   **TLS/X.509** — a certificate-based identity scheme where each station
-  holds a unique certificate the central system verifies before trusting
-  a command or accepting a report, so a compromised or spoofed device
-  can't unlock compartments it doesn't own.
+  holds a unique certificate the central system verifies before
+  trusting a command or accepting a report, so a compromised or spoofed
+  device can't unlock compartments it doesn't own.
 
 {/* concept-dependency: HLD-10 not yet built, explained inline */}
 
-Neither channel assumes the station is always reachable. Each station
-keeps a **local cache of active pickup codes** synced ahead of time, so
-a customer entering a valid code can pick up a package even if the
-station's uplink is down at that exact moment — the station validates
-the code against its own cache rather than calling the central service
-synchronously for every pickup. Deposit and pickup events that happen
-offline go into a **local retry queue with exponential backoff**: the
-station keeps attempting to flush the queue to the central system,
-waiting longer between attempts each time it fails, until connectivity
-returns and the events **reconcile** — the central system replays them
-against the source-of-truth database and resolves anything that
-conflicted with events it saw from elsewhere in the meantime. A
-**battery backup rated for 30-60 minutes** keeps the station's local
-compute (not the compartment locks themselves) running through short
-power blips so the local cache and queue survive them.
+Neither channel assumes the station is always reachable:
 
-Lock hardware itself makes a physical trade-off: **fail-secure** locks
-stay locked on power loss, protecting whatever is already stored but
-stranding a courier's undelivered package and anyone mid-pickup;
-**fail-open** locks release on power loss, guaranteeing access but
-risking theft during the outage window. Neither is uniformly correct —
-a network built for 24/7 self-service leans fail-secure by default (a
-stranded package is recoverable; a stolen one isn't), but stations
-storing higher-value contents may configure specific compartments
-fail-open under supervised conditions instead.
+<D2Diagram
+  title="Offline resilience — station-side mechanisms"
+  type="architecture"
+  chart={`direction: down
+
+Station: Locker Station (uplink down) {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+CodeCache: Local cache of active pickup codes {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+RetryQ: Local retry queue, exponential backoff {
+  style.fill: "#4b5262"
+  style.font-color: "#ffffff"
+}
+Battery: Battery backup (30-60 min)
+Central: Central system (reconciles on reconnect) {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+
+Station -> CodeCache: pickup validated locally, no round trip needed
+Station -> RetryQ: deposit/pickup events queued while offline
+Battery -> Station: keeps local compute alive through short power blips
+RetryQ -> Central: flush + reconcile once connectivity returns
+`}
+/>
+
+- A station keeps a **local cache of active pickup codes** synced ahead
+  of time, so a customer entering a valid code can pick up a package
+  even if the station's uplink is down at that exact moment — the
+  station validates the code against its own cache rather than calling
+  the central service synchronously for every pickup.
+- Deposit and pickup events that happen offline go into a **local retry
+  queue with exponential backoff**: the station keeps attempting to
+  flush the queue to the central system, waiting longer between attempts
+  each time it fails, until connectivity returns and the events
+  **reconcile** — the central system replays them against the
+  source-of-truth database and resolves anything that conflicted with
+  events it saw from elsewhere in the meantime.
+- A **battery backup rated for 30-60 minutes** keeps the station's local
+  compute (not the compartment locks themselves) running through short
+  power blips so the local cache and queue survive them.
+
+Lock hardware itself makes a physical trade-off:
+
+<CompareTable
+  title="Lock hardware behavior on power loss"
+  rows={[
+    {
+      approach: "Fail-secure",
+      pros: ["Stays locked on power loss, protecting whatever is already stored"],
+      cons: ["Strands a courier's undelivered package and anyone mid-pickup during the outage"],
+      chosenBecause: "A network built for 24/7 self-service leans fail-secure by default — a stranded package is recoverable; a stolen one isn't.",
+    },
+    {
+      approach: "Fail-open",
+      pros: ["Guarantees access even during a power outage"],
+      cons: ["Risks theft during the outage window, since the lock releases with no supervision"],
+    },
+  ]}
+/>
+
+Neither is uniformly correct — stations storing higher-value contents
+may configure specific compartments fail-open under supervised
+conditions instead of applying one policy network-wide.
 
 <QuizItem
   question="A station's cellular connection drops for 40 minutes during a busy Saturday. Why does pickup still work during that window?"
@@ -352,35 +584,44 @@ availability at the station and accepts short-lived inconsistency,
 because a locker a courier can't currently reach is worse than a locker
 whose state briefly disagrees with the network.
 
-**Local vs. centralized code verification.** Following from the same
-choice, pickup codes are validated **locally** against the station's
-synced cache rather than **centrally** against the live database on
-every attempt. Local verification is what makes offline pickup possible
-at all, but it means a code revoked centrally (say, a customer reports
-theft) doesn't take effect at that station until its next sync — a
-window centralized verification wouldn't have, at the cost of pickup
-failing outright whenever the station can't reach the network.
-
-**Reservation aggressiveness.** A **conservative hold** — a reservation
-that's guaranteed to stay valid until the customer uses or abandons it —
-is simple and never double-books, but it ties up a compartment for the
-full hold window even for customers who never show up, lowering network
-utilization. An **aggressive, probabilistic release** — freeing a
-reservation early based on a predicted low chance the customer follows
-through, informed by historical dwell-time patterns — raises utilization
-but introduces a real (if small) chance of releasing a compartment out
-from under a customer who does show up late. The base design uses
-conservative holds; probabilistic release is a genuine extension for a
-network under sustained capacity pressure, not the default.
-
-**Precomputed regional snapshots vs. on-demand computation.** Serving
-"nearest N available compartments" from a precomputed L3 snapshot means
-answers can be up to 5-15 seconds stale. Computing that ranked answer
-fresh on every request would eliminate staleness, but doing that
-scatter-gather-and-rank computation at 500,000 QPS is the same cost
-problem the caching tiers exist to avoid in the first place — on-demand
-computation isn't a real alternative at this volume, only a slower path
-that still ends up needing heavy caching in front of it.
+<CompareTable
+  title="Trade-offs across the network design"
+  rows={[
+    {
+      approach: "Local code verification (chosen)",
+      pros: ["Makes offline pickup possible at all", "No round trip on the pickup hot path"],
+      cons: ["A code revoked centrally (e.g. a theft report) doesn't take effect at that station until its next sync"],
+      chosenBecause: "Offline pickup capability outweighs the delayed-revocation window, which is short relative to sync frequency.",
+    },
+    {
+      approach: "Centralized code verification",
+      pros: ["Revocation takes effect immediately, everywhere"],
+      cons: ["Pickup fails outright whenever the station can't reach the network — the exact case this design has to survive"],
+    },
+    {
+      approach: "Conservative reservation hold (chosen)",
+      pros: ["Simple, never double-books", "Guaranteed valid until the customer uses or abandons it"],
+      cons: ["Ties up a compartment for the full hold window even for no-shows, lowering utilization"],
+      chosenBecause: "Simplicity and zero-risk are worth more than utilization at base scale; probabilistic release is a genuine extension under sustained capacity pressure.",
+    },
+    {
+      approach: "Aggressive, probabilistic release",
+      pros: ["Raises utilization by freeing reservations early based on predicted low follow-through"],
+      cons: ["Introduces a real (if small) chance of releasing a compartment out from under a late-arriving customer"],
+    },
+    {
+      approach: "Precomputed L3 regional snapshot (chosen)",
+      pros: ["Sustains 500,000 QPS", "Single lookup, no per-request aggregation"],
+      cons: ["Answers can be up to 5-15 seconds stale"],
+      chosenBecause: "On-demand scatter-gather-and-rank at 500,000 QPS is the same cost problem caching exists to avoid — not a real alternative at this volume.",
+    },
+    {
+      approach: "On-demand computation",
+      pros: ["Eliminates staleness entirely"],
+      cons: ["Doing the ranked scatter-gather fresh on every request at 500,000 QPS still ends up needing heavy caching in front of it"],
+    },
+  ]}
+/>
 
 <QuizItem
   question="Why does the Capacity Reservation Service choose eventual consistency for station state instead of blocking every deposit on central confirmation?"
@@ -389,59 +630,131 @@ that still ends up needing heavy caching in front of it.
 
 ## Worked example
 
-Trace one customer's flow end to end: discovery, reservation under the
-caching tiers, a courier's deposit through a brief offline window, and
-reconciliation back to the source of truth.
+Trace one customer's flow end to end across three focused diagrams:
+discovery through the caching tiers, reservation and a courier's deposit
+through a brief offline window, and reconciliation back to the source of
+truth.
 
-<DiagramPanel
+<D2Diagram
+  title="Step 1 — discovery through the cache tiers"
   type="sequence"
-  title="Reserve, deposit through an offline blip, and reconcile"
-  chart={`sequenceDiagram
-  actor Customer
-  participant App as Customer App
-  participant GW as API Gateway
-  participant L3 as L3 Regional Snapshot
-  participant Redis as L2 Redis
-  participant PG as L4 Postgres (geo-shard)
-  participant CRS as Capacity Reservation Service
-  participant Station as Locker Station
-  participant Notif as Notification Service
+  chart={`shape: sequence_diagram
 
-  Customer->>App: "Lockers near me, medium size"
-  App->>GW: GET /lockers?lat,lng,radius,size=medium
-  GW->>L3: geohash prefix lookup
-  alt L3 hit
-    L3-->>GW: ranked candidates, seconds-stale
-  else L3 miss
-    GW->>Redis: geohash lookup
-    alt Redis hit
-      Redis-->>GW: ranked candidates
-    else Redis miss
-      GW->>PG: geo-sharded range query
-      PG-->>GW: ranked candidates
-      GW->>Redis: backfill
-      GW->>L3: backfill
-    end
-  end
-  GW-->>App: candidate stations
-  Customer->>App: selects Station #4471, reserves medium slot
-  App->>CRS: reserve(compartmentId, version=v)
-  CRS->>PG: UPDATE compartments SET status='reserved', version=v+1 WHERE version=v
-  PG-->>CRS: 1 row updated, version now v+1
-  CRS-->>App: reservation confirmed, access code issued
-  CRS->>Station: sync reservation + code to local cache
-  Note over Station: cellular connectivity drops
-  Note over Station: courier arrives, enters code
-  Station->>Station: validate code against local cache (offline)
-  Station->>Station: unlock, mark compartment occupied locally
-  Station->>Station: queue deposit-confirmed event, retry with backoff
-  Note over Station: connectivity restored
-  Station->>CRS: flush queued deposit-confirmed event
-  CRS->>PG: reconcile: confirm occupancy in source of truth
-  CRS->>Redis: invalidate stale entry
-  CRS->>L3: invalidate stale entry
-  CRS->>Notif: trigger pickup-code notification
-  Notif-->>Customer: pickup code, 3-day window
+Customer: Customer {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+App: Customer App {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+GW: API Gateway {
+  style.fill: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+L3: L3 Regional Snapshot {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+Redis: L2 Redis {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+PG: L4 Postgres (geo-shard) {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+
+Customer -> App: "Lockers near me, medium size"
+App -> GW: GET /lockers?lat,lng,radius,size=medium
+GW -> L3: geohash prefix lookup
+L3 -> GW: "ranked candidates, seconds-stale (hit)"
+GW -> Redis: "on L3 miss: geohash lookup"
+Redis -> GW: "ranked candidates (hit)"
+Redis -> PG: "on Redis miss: geo-sharded range query"
+PG -> GW: ranked candidates
+GW -> Redis: backfill on miss path
+GW -> L3: backfill on miss path
+GW -> App: candidate stations
+`}
+/>
+
+<D2Diagram
+  title="Step 2 — reserve, then deposit through an offline blip"
+  type="sequence"
+  chart={`shape: sequence_diagram
+
+App: Customer App {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+CRS: Capacity Reservation Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+PG: L4 Postgres {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+Station: "Locker Station #4471" {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+
+App -> CRS: reserve(compartmentId, version=v)
+CRS -> PG: "UPDATE compartments SET status='reserved', version=v+1 WHERE version=v"
+PG -> CRS: 1 row updated, version now v+1
+CRS -> App: reservation confirmed, access code issued
+CRS -> Station: sync reservation + code to local cache
+Station -> Station: note -- cellular connectivity drops
+Station -> Station: note -- courier arrives, enters code
+Station -> Station: validate code against local cache, offline
+Station -> Station: unlock, mark compartment occupied locally
+Station -> Station: queue deposit-confirmed event, retry with backoff
+`}
+/>
+
+<D2Diagram
+  title="Step 3 — reconciliation once connectivity returns"
+  type="sequence"
+  chart={`shape: sequence_diagram
+
+Station: "Locker Station #4471" {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+CRS: Capacity Reservation Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+PG: L4 Postgres {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+Redis: L2 Redis {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+L3: L3 Regional Snapshot {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+Notif: Notification Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+Customer: Customer {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+
+Station -> Station: note -- connectivity restored
+Station -> CRS: flush queued deposit-confirmed event
+CRS -> PG: reconcile: confirm occupancy in source of truth
+CRS -> Redis: invalidate stale entry
+CRS -> L3: invalidate stale entry
+CRS -> Notif: trigger pickup-code notification
+Notif -> Customer: pickup code, 3-day window
 `}
 />
 
@@ -534,6 +847,11 @@ refresh interval to trade a little more staleness for headroom.
 <QuizItem
   question="Why does the Capacity Reservation Service explicitly invalidate the L2 and L3 cache entries after reconciliation, rather than waiting for their normal TTL or refresh cycle?"
   answer="Waiting for the natural refresh (5-15s for L3, TTL for L1/L2) would keep serving a stale 'available' answer for a compartment that's now physically occupied, risking a second customer reserving a slot that's already full. Explicit invalidation on state change closes that window immediately instead of relying on staleness bounds alone."
+/>
+
+<QuizItem
+  question="A hugely popular metro's L3 snapshot expires right as a Prime-Day spike hits it. What's the risk, and how does the design mitigate it?"
+  answer="Every request that misses the cache in that instant could hit L4 Postgres simultaneously — a cache stampede. The mitigation is a single-flight recompute: only one request per region rebuilds the L3 snapshot on a miss, while the rest keep serving the slightly-stale snapshot until the rebuild finishes."
 />
 
 ### Open design challenge
