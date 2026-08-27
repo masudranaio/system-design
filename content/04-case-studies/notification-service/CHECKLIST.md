@@ -8,7 +8,8 @@ Produced per
 with the output format amended by
 [docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md](../../../docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md).
 
-Status: not yet built — this checklist is a plan, not a built lesson.
+Status: `lld.mdx` built (2026-08-27) — primary side complete. `hld.mdx`
+remains deferred/opportunistic per above.
 Dependencies LLD-01–06 (concept modules) don't exist yet; every mechanism
 that would normally link to one of those lessons must be explained
 inline in `lld.mdx` and flagged with a
@@ -97,15 +98,15 @@ delivery-status tracking.
 
 ### 1. Problem framing
 
-- [ ] Frame as "the system every other service calls" — open with 2-3
+- [x] Frame as "the system every other service calls" — open with 2-3
       concrete call sites (order confirmed, OTP code, price-drop alert)
       to motivate why channel abstraction and reliability matter before
       naming a class
-- [ ] Interviewer expects clarifying questions first: which channels?
+- [x] Interviewer expects clarifying questions first: which channels?
       transactional only or also bulk/marketing? synchronous
       response needed, or fire-and-forget? what's the retry/dedup
       contract?
-- [ ] Set the boundary: this lesson designs the notification service
+- [x] Set the boundary: this lesson designs the notification service
       itself (channel abstraction, template rendering, delivery
       lifecycle, retry/dedup) — not the campaign/segmentation layer
       that might sit in front of it, and not the multi-region scale-out
@@ -113,106 +114,106 @@ delivery-status tracking.
 
 ### 2. Requirements at the object level
 
-- [ ] Translate functional requirements into nouns-that-need-behavior:
+- [x] Translate functional requirements into nouns-that-need-behavior:
       Notification, Template, Channel, Provider, DeliveryAttempt,
       NotificationRequest
-- [ ] Warn against modeling "Email"/"SMS"/"Push" as separate top-level
+- [x] Warn against modeling "Email"/"SMS"/"Push" as separate top-level
       classes with duplicated fields — they're implementations of one
       Channel abstraction, not distinct domain concepts
-- [ ] Decide cardinalities: one NotificationRequest -> one-or-many
+- [x] Decide cardinalities: one NotificationRequest -> one-or-many
       Notifications (one per target channel) -> many DeliveryAttempts
       (one per retry); one Template -> many rendered Notifications
-- [ ] Decide the idempotency-key contract explicitly: caller supplies
+- [x] Decide the idempotency-key contract explicitly: caller supplies
       one (or the service derives one from request content) and it's
       unique per logical notification, not per attempt
 
 ### 3. Class diagram
 
-- [ ] `classDiagram`: `NotificationChannel` interface (`send(message):
+- [x] `classDiagram`: `NotificationChannel` interface (`send(message):
       DeliveryResult`) implemented by `EmailChannel`, `SMSChannel`,
       `PushChannel` — the Strategy abstraction
-- [ ] `Provider` interface nested under each channel (e.g.
+- [x] `Provider` interface nested under each channel (e.g.
       `EmailProvider` implemented by `PrimarySMTPProvider`/
       `SecondarySMTPProvider`) — separates "which channel" from "which
       vendor on that channel," the hook failover needs
-- [ ] `Template` (id, channel, subject/body fields per channel shape,
+- [x] `Template` (id, channel, subject/body fields per channel shape,
       variable placeholders) + a `TemplateRenderer` that binds
       variables into a `Template` to produce a `RenderedMessage`
-- [ ] `Notification` (id, idempotency key, recipient, channel, template
+- [x] `Notification` (id, idempotency key, recipient, channel, template
       ref, rendered payload, status, attempt count)
-- [ ] `DeliveryAttempt` (notification ref, attempt number, provider
+- [x] `DeliveryAttempt` (notification ref, attempt number, provider
       used, timestamp, result/error)
-- [ ] `NotificationService` (facade: `send(request)`, orchestrates
+- [x] `NotificationService` (facade: `send(request)`, orchestrates
       render -> dedup check -> enqueue -> dispatch -> status update)
-- [ ] Relationships: `NotificationChannel` and `Provider` injected
+- [x] Relationships: `NotificationChannel` and `Provider` injected
       (Strategy), not owned; `Notification` composes its
       `DeliveryAttempt` history; `Template` is referenced, not owned,
       by `Notification`
 
 ### 4. State machine — delivery-status lifecycle
 
-- [ ] `stateDiagram-v2`: `QUEUED -> SENDING -> SENT -> DELIVERED`, with
+- [x] `stateDiagram-v2`: `QUEUED -> SENDING -> SENT -> DELIVERED`, with
       branches `SENDING -> FAILED` (transient, retry-eligible) and
       `SENT -> BOUNCED` (permanent, provider-reported after accepting
       the send — the "looked sent, actually wasn't" case)
-- [ ] Retry loop shown as a back-edge: `FAILED -> SENDING` (bounded by
+- [x] Retry loop shown as a back-edge: `FAILED -> SENDING` (bounded by
       max-attempt count), not just a dangling terminal state
-- [ ] Dead-letter terminal state: `FAILED -> DEAD_LETTERED` once max
+- [x] Dead-letter terminal state: `FAILED -> DEAD_LETTERED` once max
       attempts exhausted — the diagram must show this as a real,
       reachable state, not just described in prose
-- [ ] Note which transitions are provider-driven (webhook/callback:
+- [x] Note which transitions are provider-driven (webhook/callback:
       `SENT -> DELIVERED`, `SENT -> BOUNCED`) vs. service-driven
       (`QUEUED -> SENDING`, `SENDING -> FAILED`) — interviewers probe
       this distinction because it changes what triggers the transition
 
 ### 5. Sequence diagram — send-with-failover flow
 
-- [ ] `sequenceDiagram`: caller -> `NotificationService.send()` ->
+- [x] `sequenceDiagram`: caller -> `NotificationService.send()` ->
       dedup check (idempotency key lookup) -> template render ->
       enqueue to worker queue -> worker picks up -> `EmailChannel`
       calls `PrimarySMTPProvider` -> provider times out/errors ->
       circuit breaker trips after N consecutive failures ->
       `EmailChannel` calls `SecondaryProvider` -> success -> status
       updated to `SENT`
-- [ ] Show the dedup check as a real step (cache/DB lookup on
+- [x] Show the dedup check as a real step (cache/DB lookup on
       idempotency key) before enqueueing, not an implied detail
 
 ### 6. Database design (ER diagram)
 
-- [ ] `erDiagram`: `notification` (id, idempotency_key UNIQUE, channel,
+- [x] `erDiagram`: `notification` (id, idempotency_key UNIQUE, channel,
       recipient, template_id FK, status, attempt_count, created_at),
       `template` (id, channel, name, subject/body_template, version),
       `delivery_attempt` (id, notification_id FK, attempt_number,
       provider, result, error_code, attempted_at)
-- [ ] Indexing: unique index on `notification.idempotency_key` — the
+- [x] Indexing: unique index on `notification.idempotency_key` — the
       mechanism that actually enforces dedup, not just a description
       of "we check for duplicates"
-- [ ] Indexing: `notification(status, created_at)` for the
+- [x] Indexing: `notification(status, created_at)` for the
       retry-worker's "find stuck/failed notifications to retry" query
-- [ ] Note: template versioning (a template can change after a
+- [x] Note: template versioning (a template can change after a
       notification using it was already rendered) — store the
       rendered payload on `notification`, don't re-render from a
       possibly-changed template when checking delivery status later
 
 ### 7. Concept/mechanism deep dives (each with 2-3 real-interview branches)
 
-- [ ] **Retry policy**: exponential backoff (with jitter, to avoid a
+- [x] **Retry policy**: exponential backoff (with jitter, to avoid a
       thundering-herd retry wave against a recovering provider) + a
       max-attempts cap + what happens at the cap (dead-letter queue,
       not silent drop) — three branches, not one "retry on failure"
       line
-- [ ] **Dedup / idempotency**: idempotency key sourced from the caller
+- [x] **Dedup / idempotency**: idempotency key sourced from the caller
       vs. derived from request content hash; where the check happens
       (DB unique constraint vs. a fast-path cache check before hitting
       the DB); what "duplicate" means when the *first* attempt is still
       in flight (must not double-send while attempt #1 is pending, not
       just after it completes)
-- [ ] **Provider failover**: health-check/circuit-breaker trip
+- [x] **Provider failover**: health-check/circuit-breaker trip
       condition (N consecutive failures or an error-rate threshold);
       half-open probe behavior before fully trusting a recovered
       primary; failover cost trade-off (secondary provider may cost
       more or have different deliverability — not a free swap)
-- [ ] **Channel abstraction extensibility**: adding a new channel
+- [x] **Channel abstraction extensibility**: adding a new channel
       (e.g. WhatsApp) means implementing `NotificationChannel` +
       registering a `Provider`, without touching `NotificationService`
       or existing channels — this is the Strategy pattern's payoff,
@@ -221,51 +222,51 @@ delivery-status tracking.
 
 ### 8. Design patterns
 
-- [ ] Strategy: `NotificationChannel` (email/SMS/push) — the primary
+- [x] Strategy: `NotificationChannel` (email/SMS/push) — the primary
       pattern the whole lesson hangs off
-- [ ] Strategy (nested): `Provider` per channel (primary/secondary
+- [x] Strategy (nested): `Provider` per channel (primary/secondary
       vendor) — flag this as Strategy-within-Strategy, distinct from
       the channel-level Strategy above, and why they're separate
       abstractions rather than one combined enum
-- [ ] Factory: `ChannelFactory`/`ProviderFactory` resolving the
+- [x] Factory: `ChannelFactory`/`ProviderFactory` resolving the
       concrete implementation from a channel/provider identifier, so
       callers never `new` a concrete class directly
-- [ ] Template Method (or a simple `TemplateRenderer` if Template
+- [x] Template Method (or a simple `TemplateRenderer` if Template
       Method is overkill for this shape): the render step is
       channel-shaped but variable-binding logic is shared — call out
       which parts vary per channel and which don't
-- [ ] Circuit Breaker: wraps each `Provider` call, trips on repeated
+- [x] Circuit Breaker: wraps each `Provider` call, trips on repeated
       failure, protects the retry loop from hammering a fully-down
       provider — connect explicitly to the retry-policy deep dive above
       rather than treating it as a separate unrelated pattern
-- [ ] Observer (optional, brief): notification-status change publishes
+- [x] Observer (optional, brief): notification-status change publishes
       an event other services can subscribe to (e.g. "booking
       confirmation delivered") — note as an extension point, not core
 
 ### 9. Trade-offs
 
-- [ ] Synchronous send (caller blocks for provider response) vs.
+- [x] Synchronous send (caller blocks for provider response) vs.
       queue-and-worker send (caller gets an immediate "accepted",
       actual dispatch happens async) — latency/simplicity vs.
       throughput/resilience to provider slowness; state which this
       lesson picks and why (queue-and-worker, given the NFRs) rather
       than presenting both as equally valid
-- [ ] Per-channel rate limiting (protect each provider's own rate
+- [x] Per-channel rate limiting (protect each provider's own rate
       limit/cost budget) vs. one global limiter (simpler, but a slow
       SMS provider throttles unrelated email sends) — argue for
       per-channel
-- [ ] Dead-letter after max retries vs. retrying indefinitely — bounded
+- [x] Dead-letter after max retries vs. retrying indefinitely — bounded
       retry protects the queue from being clogged by a permanently
       broken recipient (e.g. invalid email address) at the cost of a
       genuine transient outage occasionally exhausting attempts before
       recovery
-- [ ] Storing the rendered payload vs. re-rendering on read — storage
+- [x] Storing the rendered payload vs. re-rendering on read — storage
       cost vs. correctness when templates change after send (resurfaces
       the database-design note above as a named trade-off)
 
 ### 10. Worked example
 
-- [ ] Trace one full request: Ticketmaster's booking service calls
+- [x] Trace one full request: Ticketmaster's booking service calls
       `NotificationService.send()` with idempotency key
       `booking-4821-confirmed`, template `booking_confirmation`,
       channels `[email, push]` -> dedup check passes (first time) ->
@@ -274,7 +275,7 @@ delivery-status tracking.
       times out twice -> circuit breaker trips -> failover to secondary
       -> `DELIVERED` after provider webhook confirms; push worker
       succeeds on first attempt via FCM -> `SENT`
-- [ ] Continue the trace: the same booking service retries its own
+- [x] Continue the trace: the same booking service retries its own
       call (e.g. its own network blip) with the *same* idempotency key
       10 seconds later -> dedup check finds the existing
       `Notification` rows -> no new send, existing status returned —
@@ -282,25 +283,25 @@ delivery-status tracking.
 
 ### 11. Interview angle
 
-- [ ] Follow-up: "How do you prevent a burst of duplicate sends when
+- [x] Follow-up: "How do you prevent a burst of duplicate sends when
       the calling service itself retries the HTTP request to you?"
       (ties to the in-flight-dedup branch above)
-- [ ] Follow-up: "A provider is up but slow (not erroring) — does your
+- [x] Follow-up: "A provider is up but slow (not erroring) — does your
       circuit breaker catch this, and should it?"
-- [ ] Follow-up: "How would you add a new channel (WhatsApp) without
+- [x] Follow-up: "How would you add a new channel (WhatsApp) without
       touching any existing channel's code?"
-- [ ] Follow-up: "How do you avoid retry storms across many
+- [x] Follow-up: "How do you avoid retry storms across many
       notifications when a provider goes down all at once?" (backoff
       jitter + circuit breaker acting together, not either alone)
 
 ### 12. Practice & Self-Check
 
-- [ ] 6-8 recap `QuizItem`s covering: Strategy vs. hardcoded
+- [x] 6-8 recap `QuizItem`s covering: Strategy vs. hardcoded
       if/else channel dispatch, why idempotency key uniqueness lives at
       the DB layer not just app logic, what distinguishes `FAILED` from
       `BOUNCED`, why backoff needs jitter not just exponential growth,
       why Provider is a separate abstraction from Channel
-- [ ] Open challenge: "Add a new push-notification sub-channel (e.g.
+- [x] Open challenge: "Add a new push-notification sub-channel (e.g.
       WhatsApp Business messages) without modifying
       `NotificationService`, any existing `NotificationChannel`
       implementation, or the retry/circuit-breaker infrastructure.
@@ -317,6 +318,89 @@ delivery-status tracking.
 
 ## Completeness Pass Log
 
-(To be filled in after `lld.mdx` is drafted — walk every item above
-against the finished lesson per `CLAUDE.md`'s "After writing a lesson"
-step, mark each covered or explicitly flagged as dropped.)
+**`lld.mdx` — 2026-08-27.** Walked every item in the "LLD Checklist"
+section (1-12) above against the finished lesson; all checked off `[x]`,
+nothing dropped. Notes:
+
+- Problem framing (1): opens with three concrete call sites (booking
+  confirmation, OTP, price-drop alert) before naming any class, states
+  the four clarifying questions an interviewer expects, and sets the
+  boundary explicitly (channel abstraction/template/lifecycle/retry-dedup
+  in scope; campaign layer and multi-region scale-out out of scope,
+  deferred to HLD).
+- Requirements at the object level (2): all six nouns named
+  (`NotificationRequest`, `Notification`, `Template`,
+  `NotificationChannel`, `Provider`, `DeliveryAttempt`), the
+  Email/SMS/Push-as-separate-classes anti-pattern is called out
+  explicitly, cardinalities are stated (1→many `Notification`, 1→many
+  `DeliveryAttempt`, 1→many rendered `Notification`s per `Template`),
+  and the idempotency-key contract (caller-supplied, not derived) is
+  decided with a stated reason.
+- Class diagram (3): one `type="class"` D2 diagram covers
+  `NotificationService`, `NotificationRequest`, `Notification`,
+  `DeliveryAttempt`, `Template`, `TemplateRenderer`,
+  `NotificationChannel` + 3 channel implementations, `Provider` + 2
+  provider implementations; relationships call out injected Strategy
+  (channel, provider), composed `DeliveryAttempt` history, and
+  referenced (not owned) `Template`.
+- State machine (4): `QUEUED → SENDING → SENT → DELIVERED` happy path
+  plus `SENDING → FAILED`, `SENT → BOUNCED`, the `FAILED → SENDING`
+  retry back-edge, and the `FAILED → DEAD_LETTERED` terminal state, all
+  drawn as reachable nodes. Service-driven vs. provider-driven
+  transitions are labeled on the edges themselves and explained in
+  prose.
+- Sequence diagram (5): one `type="sequence"` diagram traces
+  caller → `send()` → dedup lookup → render → enqueue → worker →
+  `EmailChannel` → `PrimarySMTPProvider` (2 timeouts) → circuit breaker
+  trip → `SecondarySMTPProvider` → success → `SENT`, with the dedup
+  check shown as an explicit `DedupStore.lookup()` step before
+  enqueueing.
+- Database design (6): ER diagram with `NOTIFICATION`, `TEMPLATE`,
+  `DELIVERY_ATTEMPT` tables and FK relationships; prose calls out the
+  `UNIQUE INDEX` on `idempotency_key` as the actual dedup-enforcement
+  mechanism, the `(status, created_at)` composite index for the retry
+  worker's query, and the rendered-payload-vs-re-render trade-off tied
+  to template versioning.
+- Deep dives (7): all four covered as named subsections — retry policy
+  (backoff+jitter, max-attempts cap, dead-letter outcome), dedup
+  (key source, cache-vs-DB-constraint layering, and the in-flight-still-
+  processing case with its own quiz item), provider failover (trip
+  condition, half-open probing, failover-isn't-free cost), and channel
+  extensibility (stated as the Strategy payoff, tied back to the class
+  diagram).
+- Design patterns (8): Strategy (channel), Strategy-nested (provider,
+  with an explicit "why separate from channel-level Strategy" note),
+  Factory, Template Method (`TemplateRenderer`), Circuit Breaker
+  (explicitly connected to the retry-policy deep dive rather than
+  presented as unrelated), and Observer flagged as an extension point,
+  not core.
+- Trade-offs (9): all four covered — queue-and-worker vs. synchronous
+  (with the NFR-driven reason queue-and-worker was chosen), per-channel
+  vs. global rate limiting, dead-letter-after-max-retries vs. infinite
+  retry, and stored-payload vs. re-render-on-read.
+- Worked example (10): traces Ticketmaster's booking-confirmation
+  request end to end (dedup pass, 2 `Notification` rows, email failover
+  to `DELIVERED`, push succeeding on first attempt), then continues with
+  the caller's own retry 10 seconds later hitting the dedup check and
+  returning existing status with no new rows — both diagrammed
+  separately per the "one diagram, one concern" rule.
+- Interview angle (11): all four follow-ups answered with a named
+  mechanism (in-flight dedup reservation; latency-aware breaker
+  trip condition; zero-existing-class-touch WhatsApp extension; jitter +
+  shared circuit-breaker state acting together against retry storms).
+- Practice & Self-Check (12): 6 recap `QuizItem`s covering Strategy vs.
+  if/else dispatch, DB-layer uniqueness vs. app-level check, FAILED vs.
+  BOUNCED, backoff jitter, Provider-vs-Channel separation, and the
+  in-flight-dedup race — within the specified 6-8 range. Open challenge
+  is the WhatsApp-sub-channel extension exactly as specified, with a
+  concrete reference answer (named classes added vs. touched, and the
+  shared retry/circuit-breaker/dedup infrastructure named as the piece
+  that must keep working unmodified) and a 5-item independently-checkable
+  rubric.
+- All 6 D2 diagrams (`type="class"` x1, `type="state"` x1,
+  `type="sequence"` x3, `type="er"` x1) verified to compile via
+  `D2().compile()` with `layout: "dagre"` — one syntax issue found and
+  fixed: an unquoted sequence-diagram message label containing square
+  brackets (`send(id, template, [email])`) breaks D2's parser the same
+  way a `[`-leading label does; fixed by quoting the three affected
+  labels as plain strings.
