@@ -91,8 +91,8 @@ function DiagramToolbar({
   onExpand,
 }: {
   panZoom: UsePanZoomResult;
-  scrollRef?: React.RefObject<HTMLElement | null>;
-  svgRef?: React.RefObject<SVGSVGElement | null>;
+  scrollRef: React.RefObject<HTMLElement | null>;
+  svgRef: React.RefObject<SVGSVGElement | null>;
   onExpand?: () => void;
 }) {
   return (
@@ -103,20 +103,27 @@ function DiagramToolbar({
       <Button type="button" variant="ghost" size="icon-xs" aria-label="Zoom out" onClick={panZoom.zoomOut}>
         <Minus className="size-3.5" aria-hidden="true" />
       </Button>
-      <Button type="button" variant="ghost" size="icon-xs" aria-label="Reset zoom" onClick={panZoom.reset}>
+      {/* Reset returns to the *fitted* scale, not to 1: the diagram
+          opened fitted, so resetting to 1 would leave a wide diagram
+          cropped and feel like the button did the opposite of reset. */}
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-xs"
+        aria-label="Reset zoom"
+        onClick={() => panZoom.resetToFit(scrollRef.current, svgRef.current)}
+      >
         <RotateCcw className="size-3.5" aria-hidden="true" />
       </Button>
-      {scrollRef && svgRef && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-xs"
-          aria-label="Fit to width"
-          onClick={() => panZoom.fitToWidth(scrollRef.current, svgRef.current)}
-        >
-          <Scan className="size-3.5" aria-hidden="true" />
-        </Button>
-      )}
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-xs"
+        aria-label="Fit to width"
+        onClick={() => panZoom.fitToWidth(scrollRef.current, svgRef.current)}
+      >
+        <Scan className="size-3.5" aria-hidden="true" />
+      </Button>
       {onExpand && (
         <Button type="button" variant="ghost" size="icon-xs" aria-label="Expand diagram" onClick={onExpand}>
           <Maximize2 className="size-3.5" aria-hidden="true" />
@@ -149,6 +156,12 @@ export function DiagramChrome({
   const [fullscreenOpen, setFullscreenOpen] = useState(false);
   const panZoom = usePanZoom();
   const fullscreenPanZoom = usePanZoom();
+  // Destructured because these are useCallback-stable while the hook
+  // object's identity tracks pan/zoom state: depending on the whole
+  // object would re-run the effects below (re-injecting the SVG and
+  // resetting the reader's scroll position) on every zoom step.
+  const { autoFit } = panZoom;
+  const { autoFit: fullscreenAutoFit } = fullscreenPanZoom;
 
   // Runs on every render where svgMarkup changes, and also covers the
   // "svgMarkup is already non-null on the very first render" case (e.g.
@@ -162,7 +175,25 @@ export function DiagramChrome({
   // diagram without this effect.
   useEffect(() => {
     injectDiagram(containerRef.current, svgMarkup, svgRef);
-  }, [svgMarkup]);
+    // Fit on mount: the SVG is injected at its authored pixel width
+    // (see injectDiagram), so anything wider than the panel would
+    // otherwise open cropped, with the reader left to discover the fit
+    // control on their own.
+    autoFit(scrollRef.current, svgRef.current);
+  }, [svgMarkup, autoFit]);
+
+  // Re-fit when the panel's width changes — a window resize, or the
+  // sidebar collapsing. autoFit is a no-op once the reader has touched
+  // a zoom control, so this can't discard a deliberate zoom.
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    if (!scroll || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      autoFit(scrollRef.current, svgRef.current);
+    });
+    observer.observe(scroll);
+    return () => observer.disconnect();
+  }, [autoFit]);
 
   // Kept in sync with the svgMarkup prop so the fullscreen container's
   // callback ref (below) can read the latest markup whenever it fires,
@@ -179,10 +210,16 @@ export function DiagramChrome({
   // fullscreen diagram silently never rendered. A callback ref fires
   // exactly when React attaches (or detaches) that specific DOM node,
   // whenever that actually happens, so it can't lose this race.
-  const setFullscreenContainer = useCallback((node: HTMLDivElement | null) => {
-    fullscreenContainerRef.current = node;
-    if (node) injectDiagram(node, svgMarkupRef.current, fullscreenSvgRef);
-  }, []);
+  const setFullscreenContainer = useCallback(
+    (node: HTMLDivElement | null) => {
+      fullscreenContainerRef.current = node;
+      if (node) {
+        injectDiagram(node, svgMarkupRef.current, fullscreenSvgRef);
+        fullscreenAutoFit(fullscreenScrollRef.current, fullscreenSvgRef.current);
+      }
+    },
+    [fullscreenAutoFit],
+  );
 
   return (
     <figure
@@ -205,7 +242,6 @@ export function DiagramChrome({
           <div
             ref={scrollRef}
             className="max-h-[40rem] cursor-grab overflow-auto bg-diagram-canvas active:cursor-grabbing"
-            onWheel={panZoom.bind.onWheel}
             onPointerDown={panZoom.bind.onPointerDown}
             onPointerMove={panZoom.bind.onPointerMove}
             onPointerUp={panZoom.bind.onPointerUp}
@@ -250,7 +286,6 @@ export function DiagramChrome({
           <div
             ref={fullscreenScrollRef}
             className="max-h-[75vh] cursor-grab overflow-auto bg-diagram-canvas active:cursor-grabbing"
-            onWheel={fullscreenPanZoom.bind.onWheel}
             onPointerDown={fullscreenPanZoom.bind.onPointerDown}
             onPointerMove={fullscreenPanZoom.bind.onPointerMove}
             onPointerUp={fullscreenPanZoom.bind.onPointerUp}
