@@ -23,6 +23,7 @@ export interface UsePanZoomResult {
   zoomIn: () => void;
   zoomOut: () => void;
   reset: () => void;
+  fitToWidth: (container: HTMLElement | null, svg: SVGSVGElement | null) => void;
   bind: {
     onWheel: (e: React.WheelEvent) => void;
     onPointerDown: (e: React.PointerEvent) => void;
@@ -45,6 +46,19 @@ export function usePanZoom(): UsePanZoomResult {
   }, []);
 
   const reset = useCallback(() => setState(INITIAL), []);
+
+  const fitToWidth = useCallback(
+    (container: HTMLElement | null, svg: SVGSVGElement | null) => {
+      if (!container || !svg) return;
+      const available = container.clientWidth;
+      const intrinsic = svg.getBoundingClientRect().width / state.scale;
+      if (!available || !intrinsic) return;
+      // Never scale up past 1: a small diagram blown up to panel width
+      // loses nothing by staying at its authored size, and blurs.
+      setState((s) => ({ ...s, scale: Math.min(1, available / intrinsic) }));
+    },
+    [state.scale],
+  );
 
   const onWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
@@ -76,6 +90,7 @@ export function usePanZoom(): UsePanZoomResult {
     zoomIn,
     zoomOut,
     reset,
+    fitToWidth,
     bind: { onWheel, onPointerDown, onPointerMove, onPointerUp },
   };
 }

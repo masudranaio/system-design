@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Maximize2, Minus, Plus, RotateCcw } from "lucide-react";
+import { Maximize2, Minus, Plus, RotateCcw, Scan } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,18 +13,23 @@ import {
 import { applyDiagramRoleClasses } from "@/lib/diagram-roles";
 import { usePanZoom, type UsePanZoomResult } from "@/lib/use-pan-zoom";
 import type { DiagramRole } from "@/lib/diagram-palette";
+import { DiagramLegend } from "@/components/lesson/DiagramLegend";
 
 export type DiagramType = "architecture" | "class" | "state" | "sequence" | "er";
 
 const TYPE_ACCENT: Record<DiagramType, string> = {
-  architecture: "text-brand",
-  state: "text-brand",
+  architecture: "text-track-hld",
+  state: "text-track-hld",
   sequence: "text-track-lld",
-  class: "text-state-warn",
-  er: "text-state-warn",
+  class: "text-track-interview",
+  er: "text-track-interview",
 };
 
-function injectDiagram(container: HTMLDivElement | null, svgMarkup: string | null) {
+function injectDiagram(
+  container: HTMLDivElement | null,
+  svgMarkup: string | null,
+  svgRef?: React.RefObject<SVGSVGElement | null>,
+) {
   if (!container || !svgMarkup) return;
   container.innerHTML = svgMarkup;
   const svg = container.querySelector("svg");
@@ -75,13 +80,19 @@ function injectDiagram(container: HTMLDivElement | null, svgMarkup: string | nul
       // display:none ancestor) — fall back to the default (0, 0) scroll.
     }
   }
+
+  if (svgRef) svgRef.current = svg;
 }
 
 function DiagramToolbar({
   panZoom,
+  scrollRef,
+  svgRef,
   onExpand,
 }: {
   panZoom: UsePanZoomResult;
+  scrollRef?: React.RefObject<HTMLElement | null>;
+  svgRef?: React.RefObject<SVGSVGElement | null>;
   onExpand?: () => void;
 }) {
   return (
@@ -95,6 +106,17 @@ function DiagramToolbar({
       <Button type="button" variant="ghost" size="icon-xs" aria-label="Reset zoom" onClick={panZoom.reset}>
         <RotateCcw className="size-3.5" aria-hidden="true" />
       </Button>
+      {scrollRef && svgRef && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          aria-label="Fit to width"
+          onClick={() => panZoom.fitToWidth(scrollRef.current, svgRef.current)}
+        >
+          <Scan className="size-3.5" aria-hidden="true" />
+        </Button>
+      )}
       {onExpand && (
         <Button type="button" variant="ghost" size="icon-xs" aria-label="Expand diagram" onClick={onExpand}>
           <Maximize2 className="size-3.5" aria-hidden="true" />
@@ -121,6 +143,10 @@ export function DiagramChrome({
   const fullscreenContainerRef = useRef<HTMLDivElement | null>(null);
   const svgMarkupRef = useRef<string | null>(null);
   svgMarkupRef.current = svgMarkup;
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const fullscreenScrollRef = useRef<HTMLDivElement | null>(null);
+  const fullscreenSvgRef = useRef<SVGSVGElement | null>(null);
   const [fullscreenOpen, setFullscreenOpen] = useState(false);
   const panZoom = usePanZoom();
   const fullscreenPanZoom = usePanZoom();
@@ -136,7 +162,7 @@ export function DiagramChrome({
   // the real dev server: the D2Diagram path silently rendered an empty
   // diagram without this effect.
   useEffect(() => {
-    injectDiagram(containerRef.current, svgMarkup);
+    injectDiagram(containerRef.current, svgMarkup, svgRef);
   }, [svgMarkup]);
 
   // Confirmed live (not caught by the mocked unit test): Base UI's
@@ -149,7 +175,7 @@ export function DiagramChrome({
   // whenever that actually happens, so it can't lose this race.
   const setFullscreenContainer = useCallback((node: HTMLDivElement | null) => {
     fullscreenContainerRef.current = node;
-    if (node) injectDiagram(node, svgMarkupRef.current);
+    if (node) injectDiagram(node, svgMarkupRef.current, fullscreenSvgRef);
   }, []);
 
   return (
@@ -161,18 +187,30 @@ export function DiagramChrome({
         {type}
       </figcaption>
       <h4 className="mt-1 font-mono text-sm font-semibold text-foreground">{title}</h4>
+      {(type === "architecture" || type === "class") && <DiagramLegend roles={roles} />}
       <div className="relative mt-3">
-        <DiagramToolbar panZoom={panZoom} onExpand={() => setFullscreenOpen(true)} />
+        <DiagramToolbar
+          panZoom={panZoom}
+          scrollRef={scrollRef}
+          svgRef={svgRef}
+          onExpand={() => setFullscreenOpen(true)}
+        />
         <div className="overflow-hidden rounded-md border border-line">
           <div
-            className="origin-top-left max-h-[32rem] cursor-grab overflow-auto active:cursor-grabbing"
-            style={{ transform: panZoom.transform }}
+            ref={scrollRef}
+            className="max-h-[40rem] cursor-grab overflow-auto bg-diagram-canvas active:cursor-grabbing"
             onWheel={panZoom.bind.onWheel}
             onPointerDown={panZoom.bind.onPointerDown}
             onPointerMove={panZoom.bind.onPointerMove}
             onPointerUp={panZoom.bind.onPointerUp}
           >
-            <div ref={containerRef} role="img" aria-label={title} />
+            <div
+              ref={containerRef}
+              role="img"
+              aria-label={title}
+              className="origin-top-left"
+              style={{ transform: panZoom.transform }}
+            />
           </div>
         </div>
       </div>
@@ -184,16 +222,26 @@ export function DiagramChrome({
           <DialogDescription className="sr-only">
             Fullscreen, zoomable view of the {type} diagram.
           </DialogDescription>
-          <DiagramToolbar panZoom={fullscreenPanZoom} />
+          <DiagramToolbar
+            panZoom={fullscreenPanZoom}
+            scrollRef={fullscreenScrollRef}
+            svgRef={fullscreenSvgRef}
+          />
           <div
-            className="max-h-[75vh] origin-top-left cursor-grab overflow-auto active:cursor-grabbing"
-            style={{ transform: fullscreenPanZoom.transform }}
+            ref={fullscreenScrollRef}
+            className="max-h-[75vh] cursor-grab overflow-auto bg-diagram-canvas active:cursor-grabbing"
             onWheel={fullscreenPanZoom.bind.onWheel}
             onPointerDown={fullscreenPanZoom.bind.onPointerDown}
             onPointerMove={fullscreenPanZoom.bind.onPointerMove}
             onPointerUp={fullscreenPanZoom.bind.onPointerUp}
           >
-            <div ref={setFullscreenContainer} role="img" aria-label={title} />
+            <div
+              ref={setFullscreenContainer}
+              role="img"
+              aria-label={title}
+              className="origin-top-left"
+              style={{ transform: fullscreenPanZoom.transform }}
+            />
           </div>
         </DialogContent>
       </Dialog>
