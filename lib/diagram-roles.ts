@@ -1,3 +1,5 @@
+import type { DiagramRole } from "./diagram-palette";
+
 export type { DiagramRole } from "./diagram-palette";
 
 const ROLE_KEYWORDS: Record<DiagramRole, RegExp> = {

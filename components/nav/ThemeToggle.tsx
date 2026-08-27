@@ -1,16 +1,30 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 import { useTheme } from "next-themes";
 import { Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
+const noopSubscribe = () => () => {};
+
+// Server-rendered markup can't know the resolved theme (it lives in
+// localStorage/media query, client-only), so this component must render
+// a theme-agnostic placeholder on the server and only switch to the real
+// icon once hydrated on the client. useSyncExternalStore gives a
+// client/server snapshot split for exactly this without a setState-in-effect
+// (which forces an extra render pass for no benefit here).
+function useMounted() {
+  return useSyncExternalStore(
+    noopSubscribe,
+    () => true,
+    () => false,
+  );
+}
+
 export function ThemeToggle() {
   const { resolvedTheme, setTheme } = useTheme();
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => setMounted(true), []);
+  const mounted = useMounted();
 
   if (!mounted) {
     return (

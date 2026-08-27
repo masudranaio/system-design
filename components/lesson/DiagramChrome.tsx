@@ -142,7 +142,6 @@ export function DiagramChrome({
   const containerRef = useRef<HTMLDivElement>(null);
   const fullscreenContainerRef = useRef<HTMLDivElement | null>(null);
   const svgMarkupRef = useRef<string | null>(null);
-  svgMarkupRef.current = svgMarkup;
   const scrollRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const fullscreenScrollRef = useRef<HTMLDivElement | null>(null);
@@ -163,6 +162,13 @@ export function DiagramChrome({
   // diagram without this effect.
   useEffect(() => {
     injectDiagram(containerRef.current, svgMarkup, svgRef);
+  }, [svgMarkup]);
+
+  // Kept in sync with the svgMarkup prop so the fullscreen container's
+  // callback ref (below) can read the latest markup whenever it fires,
+  // without needing svgMarkup itself as a dependency.
+  useEffect(() => {
+    svgMarkupRef.current = svgMarkup;
   }, [svgMarkup]);
 
   // Confirmed live (not caught by the mocked unit test): Base UI's

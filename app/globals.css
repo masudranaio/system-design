@@ -333,3 +333,24 @@ h1, h2, h3, h4, h5, h6 {
   fill: #0d1b24 !important;
   font-weight: 600 !important;
 }
+
+/*
+ * Exception to the blanket dark-text rule above: a D2 class diagram's
+ * header bar (`.class_header`, the bold ByteByteGo-style chrome added
+ * for class diagrams) is filled dark (`fill-N1`, #0A0F25), and D2 itself
+ * authors that header's title text in the lightest neutral (`fill-N7`,
+ * white="#FFFFFF") specifically to read against that dark bar — this is
+ * the one place in a diagram D2 already chose white-on-dark on purpose.
+ * The blanket rule above stomped that choice to the same near-black
+ * `#0d1b24` used for every other (light-background) label, making every
+ * class diagram's header title nearly invisible (confirmed live: dark
+ * green-on-navy at ~1.2:1 contrast) in both themes. Every other text
+ * role in a class diagram (`fill-N1` field names, `fill-B2` visibility
+ * marks, `fill-AA2` types) sits on the shape's white body and is
+ * correctly forced dark, so this exception is scoped to `fill-N7`
+ * specifically, not to `.class_header` more broadly.
+ */
+.diagram-animate text.fill-N7 {
+  color: #ffffff !important;
+  fill: #ffffff !important;
+}

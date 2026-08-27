@@ -18,7 +18,10 @@ export function TableOfContents({ containerId }: { containerId: string }) {
     if (!container) return;
 
     const nodes = Array.from(container.querySelectorAll<HTMLHeadingElement>("h2[id]"));
-    setHeadings(nodes.map((node) => ({ id: node.id, text: node.textContent ?? "" })));
+    function syncHeadings() {
+      setHeadings(nodes.map((node) => ({ id: node.id, text: node.textContent ?? "" })));
+    }
+    syncHeadings();
     if (nodes.length === 0) return;
 
     // A heading is "active" once it's scrolled up to this line from the
@@ -98,7 +101,7 @@ export function TableOfContents({ containerId }: { containerId: string }) {
               <a
                 href={`#${heading.id}`}
                 className={cn(
-                  "-ml-px block border-l-2 py-1 pl-3 text-sm transition-colors",
+                  "-ml-px block border-l-2 py-1 pl-3 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
                   active
                     ? "border-brand font-semibold text-brand"
                     : "border-transparent text-muted-foreground hover:border-line hover:text-foreground",
