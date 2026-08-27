@@ -1,0 +1,944 @@
+---
+title: "Chat/WhatsApp: High-Level Design"
+---
+
+Every case study so far has been a request/response problem wearing
+different clothes: a client asks, a server answers, the connection closes.
+Chat breaks that shape entirely. A message has to reach a specific human
+being who might be on a subway with no signal, asleep with the app closed,
+or typing back within 100ms — and the server has to know which one of
+those is true, for hundreds of millions of people, at every instant.
+
+## Problem framing
+
+Two coupled problems define this system, and neither is solvable by just
+adding more servers to a stateless fleet the way search or checkout
+traffic would be.
+
+<Point icon="layers">
+  **Holding the connection.** Tens of millions of clients need a
+  long-lived, low-latency, bidirectional channel open to the server at
+  the same time — not a request that finishes in 200ms, but a socket that
+  stays alive for hours. The server has to remember, for every one of
+  those users, exactly which physical machine their live connection is
+  sitting on right now.
+</Point>
+
+<Point icon="shield">
+  **Guaranteeing the message.** Once a message is sent, it has to arrive
+  at its recipient exactly the way the sender intended: not lost, not
+  duplicated, and never shown out of order relative to the rest of that
+  conversation — even if the recipient's phone was off when it was sent
+  and only reconnects an hour later.
+</Point>
+
+That second problem is why this is fundamentally a **stateful-connection**
+system, unlike the mostly-stateless services covered in earlier case
+studies. A stateless API server can hand off any request to any instance
+behind a load balancer because no instance remembers anything about the
+caller between requests. A chat server can't do that: if Bob's phone has
+a live WebSocket open to gateway server #47, a message for Bob is useless
+sent to gateway server #12 — #12 has no socket to Bob at all. The system
+has to track *which server holds which user's connection* as a first-class
+piece of state, and keep that mapping correct as users disconnect,
+reconnect, and roam across gateway servers all day.
+
+{/* concept-dependency: HLD-01 not yet built, explained inline */}
+That state also forces an explicit choice about staleness. A user's
+online/offline status is allowed to lag reality by a few seconds — nobody
+is harmed if "last seen 2 minutes ago" is actually 90 seconds out of date.
+A message's delivery guarantee is not allowed to lag or drop at all. So,
+much like the read/write split in earlier case studies, this system leans
+toward availability (serve a slightly stale presence status rather than
+block) for presence, and toward durability (never silently lose a
+message) for the message path itself — two different consistency
+postures inside the same product, covered in their own deep dives below.
+
+<QuizItem
+  question="Why can't the connection-gateway tier be treated as a plain stateless fleet behind a load balancer, the way a typical API server tier is?"
+  answer="Because a WebSocket connection is physically pinned to one machine — if a user's live socket is on gateway server #47, only #47 can push to them directly. The system has to track a real piece of state (which server holds which user's connection) that a stateless API tier never needs to track at all."
+/>
+
+## Requirements & capacity estimate
+
+**Functional requirements:**
+
+- 1:1 messaging between two users, delivered in real time when both are
+  online
+- Group messaging (up to a few hundred members) with the same real-time
+  delivery when members are online
+- Delivery/read receipts — sent → delivered → read — tracked per
+  recipient in a group, not just per message
+- Online presence / last-seen for a user's contacts
+- Persisted message history per conversation, with scroll-back pagination
+- Multi-device sync — a message sent or received on one device shows up
+  in the same conversation state on a linked device
+- Offline delivery: a message sent to an offline user is queued and
+  delivered (plus a push notification) when they reconnect
+
+**Non-functional requirements:**
+
+- Online-to-online delivery latency of roughly 100–300ms
+- Per-conversation ordering — never out of order within one conversation,
+  even under retries or jitter; no global ordering across conversations
+  required
+- At-least-once delivery — a message is never silently dropped; the
+  client dedupes on a client-generated message ID if it arrives twice
+- Massive connection scale — hundreds of millions of daily active users,
+  tens of millions of concurrent persistent connections
+- A single chat server or data-center failure forces a reconnect, never a
+  permanently dropped account
+- Durability — once a message is acknowledged "sent," it survives a
+  server crash on the delivery path
+
+**Out of scope for this lesson:** the end-to-end encryption cryptography
+itself (key exchange, ratcheting) — only where encryption conceptually
+sits in the flow is covered; voice/video calling; the media upload/CDN
+pipeline in detail; Stories/Status; spam and abuse-rate-limiting policy.
+
+**Back-of-envelope math:**
+
+<KeyStat
+  value="~50M"
+  label="concurrent WebSocket connections held open at peak"
+  detail="Assume 500M daily active users, of whom roughly 10% are online at any given instant (people spread across time zones, most of the day not actively in the app): 500M × 10% ≈ 50M simultaneous persistent connections the connection-gateway tier has to hold open at once."
+/>
+
+<KeyStat
+  value="~3–4M msgs/sec"
+  label="peak message throughput, global"
+  detail="WhatsApp alone reports handling 100+ billion messages a day across 2+ billion users. 100,000,000,000 ÷ 86,400s ≈ 1.16M messages/sec averaged across a full day — but traffic isn't flat, it concentrates around a few evening-peak hours per region. A conservative 3x peak-over-average multiplier puts peak throughput at roughly 3–4M messages/sec globally."
+/>
+
+<KeyStat
+  value="~700–1,000"
+  label="connection-gateway servers needed"
+  detail="A well-tuned WebSocket-terminating server (epoll/event-loop based, not thread-per-connection) can comfortably hold 50k–100k concurrent idle-ish connections. 50M connections ÷ ~75k/server (the range's midpoint) ≈ 667 servers; round up for redundancy, uneven regional load, and headroom during a regional failover to a realistic 700–1,000-server gateway fleet."
+/>
+
+## Architecture
+
+<D2Diagram
+  title="System overview: connection, delivery, and storage tiers"
+  type="architecture"
+  chart={`direction: right
+client: {
+  label: "Mobile / Web Client"
+  icon: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxyZWN0IHdpZHRoPSIxNCIgaGVpZ2h0PSIyMCIgeD0iNSIgeT0iMiIgcng9IjIiIHJ5PSIyIi8+PHBhdGggZD0iTTEyIDE4aC4wMSIvPjwvc3ZnPg=="
+  style.fill: "#3b6fd6"
+  style.stroke: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+gateway: {
+  label: "Connection Gateway\\n(WebSocket-terminating tier)"
+  icon: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxjaXJjbGUgY3g9IjEyIiBjeT0iMTIiIHI9IjEwIi8+PHBhdGggZD0iTTIgMTJoMjAiLz48cGF0aCBkPSJNMTIgMmExNS4zIDE1LjMgMCAwIDEgNCAxMCAxNS4zIDE1LjMgMCAwIDEtNCAxMCAxNS4zIDE1LjMgMCAwIDEtNC0xMCAxNS4zIDE1LjMgMCAwIDEgNC0xMHoiLz48L3N2Zz4="
+  style.fill: "#5b4fbf"
+  style.stroke: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+session: {
+  label: "Session / Routing Store\\n(Redis: user_id -> gateway_id)"
+  icon: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxwb2x5Z29uIHBvaW50cz0iMTMgMiAzIDE0IDEyIDE0IDExIDIyIDIxIDEwIDEyIDEwIDEzIDIiLz48L3N2Zz4="
+  style.fill: "#b8722a"
+  style.stroke: "#b8722a"
+  style.font-color: "#ffffff"
+}
+presence: {
+  label: "Presence Store\\n(Redis, heartbeat TTL)"
+  icon: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxwb2x5Z29uIHBvaW50cz0iMTMgMiAzIDE0IDEyIDE0IDExIDIyIDIxIDEwIDEyIDEwIDEzIDIiLz48L3N2Zz4="
+  style.fill: "#b8722a"
+  style.stroke: "#b8722a"
+  style.font-color: "#ffffff"
+}
+msgsvc: {
+  label: "Message Service"
+  icon: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxyZWN0IHdpZHRoPSIyMCIgaGVpZ2h0PSI4IiB4PSIyIiB5PSIyIiByeD0iMiIgcnk9IjIiLz48cmVjdCB3aWR0aD0iMjAiIGhlaWdodD0iOCIgeD0iMiIgeT0iMTQiIHJ4PSIyIiByeT0iMiIvPjxsaW5lIHgxPSI2IiB4Mj0iNi4wMSIgeTE9IjYiIHkyPSI2Ii8+PGxpbmUgeDE9IjYiIHgyPSI2LjAxIiB5MT0iMTgiIHkyPSIxOCIvPjwvc3ZnPg=="
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+mq: {
+  label: "Delivery Queue"
+  icon: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxsaW5lIHgxPSI4IiB4Mj0iMjEiIHkxPSI2IiB5Mj0iNiIvPjxsaW5lIHgxPSI4IiB4Mj0iMjEiIHkxPSIxMiIgeTI9IjEyIi8+PGxpbmUgeDE9IjgiIHgyPSIyMSIgeTE9IjE4IiB5Mj0iMTgiLz48bGluZSB4MT0iMyIgeDI9IjMuMDEiIHkxPSI2IiB5Mj0iNiIvPjxsaW5lIHgxPSIzIiB4Mj0iMy4wMSIgeTE9IjEyIiB5Mj0iMTIiLz48bGluZSB4MT0iMyIgeDI9IjMuMDEiIHkxPSIxOCIgeTI9IjE4Ii8+PC9zdmc+"
+  style.fill: "#4b5262"
+  style.stroke: "#4b5262"
+  style.font-color: "#ffffff"
+}
+msgstore: {
+  label: "Message Store\\n(partitioned by conversation)"
+  icon: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxlbGxpcHNlIGN4PSIxMiIgY3k9IjUiIHJ4PSI5IiByeT0iMyIvPjxwYXRoIGQ9Ik0zIDV2MTRhOSAzIDAgMCAwIDE4IDBWNSIvPjxwYXRoIGQ9Ik0zIDEyYTkgMyAwIDAgMCAxOCAwIi8+PC9zdmc+"
+  style.fill: "#b23a48"
+  style.stroke: "#b23a48"
+  style.font-color: "#ffffff"
+}
+pushsvc: {
+  label: "Push Notification Service\\n(APNs / FCM)"
+  icon: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxyZWN0IHdpZHRoPSIyMCIgaGVpZ2h0PSI4IiB4PSIyIiB5PSIyIiByeD0iMiIgcnk9IjIiLz48cmVjdCB3aWR0aD0iMjAiIGhlaWdodD0iOCIgeD0iMiIgeT0iMTQiIHJ4PSIyIiByeT0iMiIvPjxsaW5lIHgxPSI2IiB4Mj0iNi4wMSIgeTE9IjYiIHkyPSI2Ii8+PGxpbmUgeDE9IjYiIHgyPSI2LjAxIiB5MT0iMTgiIHkyPSIxOCIvPjwvc3ZnPg=="
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+
+client -> gateway: "wss:// persistent connection"
+gateway -> session: "register user_id -> gateway_id"
+gateway -> presence: "heartbeat refresh"
+gateway -> msgsvc: "send message"
+msgsvc -> msgstore: "persist (durable write)"
+msgsvc -> mq: "enqueue for delivery"
+mq -> gateway: "deliver: recipient online"
+mq -> pushsvc: "recipient offline: wake device"
+`}
+/>
+
+Every client holds one persistent connection to a gateway server, which
+is the only tier that ever touches a live socket. Everything the gateway
+needs to route a message — which user is on which gateway, who's
+currently online — lives in Redis, not in the gateway's own memory, which
+matters for the failover trade-off covered later. The message service is
+the single place that persists a message durably before anything else
+happens to it; delivery to a live connection and delivery via push
+notification are two different outcomes of the same enqueue step, not two
+different code paths bolted on separately.
+
+{/* concept-dependency: HLD-03 not yet built, explained inline */}
+The "Connection Gateway" box is a fleet of ~700–1,000 machines (per the
+capacity estimate above) sitting behind an L4 (transport-layer) load
+balancer. Unlike the L7, path-aware routing a stateless API gateway would
+use, this load balancer only needs to pick *some* healthy gateway
+instance to accept a new incoming connection — it has no idea, and
+doesn't need to know, which user ends up on which machine. That mapping
+is decided after the connection lands, during authentication, and lives
+in the session store instead.
+
+## Deep dives
+
+### Connection management
+
+A persistent, low-latency, bidirectional channel is the one requirement
+this whole design exists to satisfy, so the transport choice and how the
+gateway tier tracks who's connected both deserve their own treatment.
+
+- **WebSocket over polling.** Short-polling (client asks "anything new?"
+  every few seconds) trades latency for simplicity — a message can sit
+  waiting up to a full poll interval before the client even asks for it,
+  which blows past the ~100–300ms target. Long-polling (server holds the
+  request open until there's something to send) narrows that gap but
+  still pays a full HTTP request/response cycle's overhead per message
+  and needs a new connection re-opened after every response. A WebSocket
+  upgrades one HTTP connection into a full-duplex socket that stays open
+  indefinitely — the server pushes the instant it has something, with no
+  request to re-issue.
+- **The gateway is stateless-per-request; the routing table is the real
+  state.** The gateway process itself doesn't need to remember anything
+  about a user across restarts — it's the `user_id -> gateway_id` mapping,
+  typically kept in Redis, that has to survive a gateway's death. Losing a
+  gateway process loses its live sockets (those users get disconnected)
+  but never loses the *record* of who was talking to whom, which the next
+  reconnect rebuilds from durable storage rather than from a dead
+  process's memory.
+- **Heartbeats detect dead connections faster than TCP alone.** TCP's own
+  keepalive/timeout can take minutes to notice a connection is dead (a
+  phone that lost signal without a clean disconnect leaves a socket that
+  looks alive to the OS for a long time). A lightweight ping/pong sent
+  over the WebSocket every ~15–30 seconds, with the server expecting a
+  pong back within a short window, gives a bounded, fast signal: no pong
+  in time means the connection is presumed dead, its routing entry is
+  cleared, and any further messages route through the offline path
+  instead of a socket that will never deliver them.
+
+<D2Diagram
+  title="WebSocket connection lifecycle: connect, heartbeat, reconnect"
+  type="sequence"
+  chart={`shape: sequence_diagram
+client: "Client"
+gateway: "Gateway (server_7)"
+session: "Session Store (Redis)"
+
+client.style.fill: "#3b6fd6"
+client.style.font-color: "#ffffff"
+gateway.style.fill: "#5b4fbf"
+gateway.style.font-color: "#ffffff"
+session.style.fill: "#b8722a"
+session.style.font-color: "#ffffff"
+
+client -> gateway: "CONNECT wss:// (auth token)"
+gateway -> session: "SET session:user_42 = server_7 (TTL)"
+session --> gateway: "OK"
+gateway --> client: "101 Switching Protocols"
+client -> gateway: "ping (every 20s)"
+gateway --> client: "pong"
+gateway -> session: "refresh TTL"
+client -> gateway: "connection drops (no pong in time)"
+gateway -> session: "DEL session:user_42"
+client -> gateway: "reconnect (new socket)"
+gateway -> session: "SET session:user_42 = server_9"
+`}
+/>
+
+*The routing entry, not the socket itself, is the durable fact — a
+reconnect after a drop simply overwrites it with whichever gateway
+happens to accept the new connection.*
+
+<QuizItem
+  question="Why does a 20-second heartbeat interval catch a dead connection faster than just relying on TCP's own timeout?"
+  answer="TCP alone can take minutes to notice a socket is dead, especially on mobile networks where a connection can go silent (lost signal) without a clean close. An application-level ping/pong on a short interval gives a bounded, fast signal — no pong within the expected window means the server can presume the connection dead and clear its routing entry within tens of seconds, not minutes."
+/>
+
+### Multi-device sync
+
+The same routing idea extends naturally to one account with several live
+connections at once: a phone and a linked web client are just two
+entries under the same user, not two different users.
+
+<D2Diagram
+  title="Multi-device delivery: one account, two live connections"
+  type="architecture"
+  chart={`direction: right
+msgsvc: {
+  label: "Message Service"
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+session: {
+  label: "Session Store\\nuser_42 -> [gw_phone, gw_web]"
+  style.fill: "#b8722a"
+  style.stroke: "#b8722a"
+  style.font-color: "#ffffff"
+}
+gwPhone: {
+  label: "Gateway (phone socket)"
+  style.fill: "#5b4fbf"
+  style.stroke: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+gwWeb: {
+  label: "Gateway (web socket)"
+  style.fill: "#5b4fbf"
+  style.stroke: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+phone: {
+  label: "Phone client"
+  style.fill: "#3b6fd6"
+  style.stroke: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+web: {
+  label: "Web client"
+  style.fill: "#3b6fd6"
+  style.stroke: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+
+msgsvc -> session: "lookup all devices for user_42"
+session -> msgsvc: "[gw_phone, gw_web]"
+msgsvc -> gwPhone: "deliver"
+msgsvc -> gwWeb: "deliver"
+gwPhone -> phone: "push over socket"
+gwWeb -> web: "push over socket"
+`}
+/>
+
+The session store's value for a user isn't a single gateway ID, it's a
+small set of them — one per linked device with a live connection. A
+message fans out to every entry in that set the same way a group message
+fans out to every online member, covered next; multi-device sync and
+group fan-out are the same mechanism applied to a set of size N, whether
+those N entries are one person's devices or a group's members.
+
+### Message delivery guarantee
+
+This is the part of the design an interviewer is really probing when
+they ask "how does chat work" — three separate guarantees, each solved by
+a different mechanism.
+
+- **At-least-once delivery via persist-before-ack.** The message service
+  writes a message to durable storage *before* acknowledging the sender,
+  as shown in the architecture diagram above. If the service crashes
+  between persisting and acknowledging, the client simply doesn't see a
+  "sent" confirmation and retries — the retry is safe because the next
+  guarantee (client-generated IDs) makes a duplicate write harmless rather
+  than a duplicate message.
+- **Client-side dedup via idempotency key.** Every message the client
+  sends carries a `client_msg_id` it generated locally (e.g. a UUID) before
+  the network call. If a retry causes the same message to reach the
+  server twice, the message service treats a repeated `client_msg_id` for
+  the same conversation as a no-op — return the existing message's
+  status rather than creating a second row. This is what makes
+  at-least-once delivery survivable: the network can duplicate a request
+  as many times as it wants, and the visible result is still exactly one
+  message.
+- **Per-conversation ordering via a sequence number, not a timestamp.**
+  Each conversation (a 1:1 pair or a group) has its own monotonically
+  increasing counter. Every message persisted into that conversation gets
+  the next number — `conv_118_seq_42`, then `43`, then `44` — and clients
+  render messages sorted by that number, not by wall-clock timestamp.
+  Wall-clock timestamps from different senders' devices can't be trusted
+  to agree closely enough (clock skew, network jitter) to guarantee two
+  near-simultaneous messages render in the order they were actually
+  accepted by the server; a single counter owned by the message service
+  for that one conversation has no such race, because it only has to be
+  consistent with itself, not with every other conversation in the
+  system.
+- **Read receipts are a separate status pipeline, not a message-row
+  field.** Sent/delivered/read status is tracked per `(message, recipient)`
+  pair, not baked into the message itself — a group message has one row
+  in the message store but N independent receipt entries, one per
+  recipient, each moving through its own sent → delivered → read
+  transitions on its own schedule. Modeling status as a separate,
+  append-only stream keeps the (much larger) message store itself
+  write-once, and lets receipt updates — which are far more frequent than
+  new messages, since read status keeps changing — scale independently.
+
+<QuizItem
+  question="Two identical copies of the same message reach the message service because the client retried after a slow network response. What stops the recipient from seeing it twice?"
+  answer="The client attaches the same client-generated client_msg_id to both copies. The message service recognizes the second write as a duplicate of an existing client_msg_id for that conversation and returns the existing message's status instead of creating a second row — the retry is safe specifically because the dedup key, not the network, is what guarantees exactly-once visible delivery."
+/>
+
+<QuizItem
+  question="Why use a per-conversation sequence number instead of each message's send timestamp to order messages within a conversation?"
+  answer="Timestamps come from different senders' devices and are subject to clock skew and network jitter, so two near-simultaneous messages aren't guaranteed to compare correctly. A single counter owned by the message service for that one conversation only needs to stay consistent with itself, which a distributed set of client clocks can't guarantee."
+/>
+
+<D2Diagram
+  title="1:1 delivery, recipient online: sent -> delivered"
+  type="sequence"
+  chart={`shape: sequence_diagram
+sender: "Sender"
+gwS: "Sender's Gateway"
+msgsvc: "Message Service"
+store: "Message Store"
+session: "Session Store"
+gwR: "Recipient's Gateway"
+recipient: "Recipient"
+
+sender.style.fill: "#3b6fd6"
+sender.style.font-color: "#ffffff"
+recipient.style.fill: "#3b6fd6"
+recipient.style.font-color: "#ffffff"
+gwS.style.fill: "#5b4fbf"
+gwS.style.font-color: "#ffffff"
+gwR.style.fill: "#5b4fbf"
+gwR.style.font-color: "#ffffff"
+msgsvc.style.fill: "#0e7c86"
+msgsvc.style.font-color: "#ffffff"
+store.style.fill: "#b23a48"
+store.style.font-color: "#ffffff"
+session.style.fill: "#b8722a"
+session.style.font-color: "#ffffff"
+
+sender -> gwS: "send (client_msg_id=abc123)"
+gwS -> msgsvc: "forward"
+msgsvc -> store: "persist, assign conv_seq=42"
+store --> msgsvc: "ack"
+msgsvc --> gwS: "ack: sent"
+gwS --> sender: "check-mark: sent"
+msgsvc -> session: "lookup recipient's gateway"
+session --> msgsvc: "gateway = gwR"
+msgsvc -> gwR: "deliver seq=42"
+gwR -> recipient: "push over live socket"
+recipient --> gwR: "delivered ack"
+gwR --> msgsvc: "status: delivered"
+msgsvc --> gwS: "delivered receipt"
+gwS --> sender: "double check-mark: delivered"
+`}
+/>
+
+*This trace only covers the recipient-online path; what happens when the
+session lookup finds no live gateway is its own deep dive next.*
+
+### Online presence / last-seen
+
+Presence looks like a small feature but is a fan-out problem in its own
+right, and it's the one place in this design that deliberately tolerates
+staleness.
+
+- **Heartbeat-driven, TTL-based presence.** The system overview diagram's
+  gateway → presence edge is the mechanism: connecting (or each
+  heartbeat) refreshes a Redis key like `presence:user_42 = online` with
+  a short TTL, e.g. 30 seconds. If heartbeats stop — the app is
+  backgrounded, the connection drops — the key simply expires on its own
+  a few seconds later and the user reads as offline, with no explicit
+  "going offline" message required from a client that may not get the
+  chance to send one.
+- **Presence fan-out is the actual scale problem, not the read.** A single
+  presence lookup is cheap. The expensive part is that hundreds of
+  contacts might care about one user's status changing, and none of them
+  should have to poll for it. WhatsApp's approach is to narrow this
+  aggressively: presence is only pushed to a user's *mutual* contacts, and
+  in practice only to the ones with an open conversation view on screen
+  right now — not broadcast to an entire contact list on every connect
+  and disconnect.
+- **Presence tolerates a few seconds of staleness on purpose.** Unlike
+  message delivery, where a dropped or duplicated update is a correctness
+  bug, a presence update lagging real status by a couple of seconds is
+  invisible to a user — "online" flipping to "last seen a few seconds
+  ago" a beat late costs nothing. That gives the system room to batch or
+  debounce presence-change fan-out rather than pushing every flicker
+  instantly, trading a little freshness for a lot less fan-out traffic.
+
+<QuizItem
+  question="A user's app crashes without sending any 'going offline' signal. How does the system still show them as offline within seconds?"
+  answer="Presence is TTL-based, not event-based: the presence key only stays 'online' because heartbeats keep refreshing its TTL. Once heartbeats stop (the crash means none get sent), the key expires on its own after the TTL window (e.g. 30 seconds) — no explicit offline signal from the client is required."
+/>
+
+### Group-chat fan-out
+
+A group message has to reach every member, not one recipient — which
+turns a single write into up to a few hundred, and where those writes
+happen is a real design decision, not a detail.
+
+<D2Diagram
+  title="Group message fan-out: online members vs. offline inbox"
+  type="architecture"
+  chart={`direction: right
+sender: {
+  label: "Sender"
+  style.fill: "#3b6fd6"
+  style.stroke: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+msgsvc: {
+  label: "Message Service"
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+groupdb: {
+  label: "Group Membership Store"
+  style.fill: "#b23a48"
+  style.stroke: "#b23a48"
+  style.font-color: "#ffffff"
+}
+onlineGw: {
+  label: "Online members'\\nlive gateway connections"
+  style.fill: "#5b4fbf"
+  style.stroke: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+offlineInbox: {
+  label: "Offline Inbox\\n(1 entry per offline member)"
+  style.fill: "#b23a48"
+  style.stroke: "#b23a48"
+  style.font-color: "#ffffff"
+}
+
+sender -> msgsvc: "send to Group 'Trip' (250 members)"
+msgsvc -> groupdb: "lookup member list"
+groupdb -> msgsvc: "247 online, 3 offline"
+msgsvc -> onlineGw: "fan-out: 1 push per online member"
+msgsvc -> offlineInbox: "fan-out: 1 durable write per offline member"
+`}
+/>
+
+- **Fan-out-on-write.** The message service pushes a copy to every
+  member's delivery path (live socket or offline inbox) at send time, as
+  drawn above. Online members see it in ~100–300ms like a 1:1 message;
+  the cost is upfront write amplification — one send becomes N writes,
+  which is expensive for a 10,000-member broadcast channel.
+- **Fan-out-on-read.** The message is written once, keyed by group ID;
+  members pull it on their next reconnect or scroll-back rather than
+  having it pushed to them individually. This avoids the write
+  amplification entirely but adds latency for online members, who now
+  have to poll or be separately notified rather than receiving a push.
+- **Hybrid by group size.** Small-to-medium groups (the common case —
+  family chats, work teams, up to a few hundred members) use fan-out-on-
+  write, since the write amplification is small and the latency win for
+  online members matters. Very large broadcast-style groups fall back to
+  fan-out-on-read (or a hybrid: push a lightweight notification, let
+  clients pull the actual content), since pushing a full copy to tens of
+  thousands of members on every message would overwhelm the delivery
+  queue for a case real products treat differently (broadcast lists,
+  channels) from ordinary group chat.
+
+<QuizItem
+  question="A 5-person family group chat and a 50,000-member public broadcast channel both need to deliver messages to their members. Why might they use different fan-out strategies?"
+  answer="Fan-out-on-write costs one write per member, which is trivial for 5 people but explodes into 50,000 writes per message for the broadcast channel — an amount of write amplification the delivery queue and offline-inbox writes can't sustain. The broadcast case is better served by fan-out-on-read (or a hybrid push-notify/pull-content split), trading a little latency for members to avoid that write storm."
+/>
+
+### Offline delivery & push notification fallback
+
+When the session-store lookup in the 1:1 delivery flow finds no live
+gateway for a recipient, the message doesn't wait — it goes durable
+immediately and a push notification does the one job it's good at:
+telling a closed app to come back and check.
+
+<D2Diagram
+  title="Offline delivery: queue, push wake-up, reconnect sync"
+  type="sequence"
+  chart={`shape: sequence_diagram
+msgsvc: "Message Service"
+session: "Session Store"
+inbox: "Offline Inbox"
+pushsvc: "Push Notification Service"
+gateway: "Gateway"
+device: "Recipient's Device"
+
+msgsvc.style.fill: "#0e7c86"
+msgsvc.style.font-color: "#ffffff"
+session.style.fill: "#b8722a"
+session.style.font-color: "#ffffff"
+inbox.style.fill: "#b23a48"
+inbox.style.font-color: "#ffffff"
+pushsvc.style.fill: "#0e7c86"
+pushsvc.style.font-color: "#ffffff"
+gateway.style.fill: "#5b4fbf"
+gateway.style.font-color: "#ffffff"
+device.style.fill: "#3b6fd6"
+device.style.font-color: "#ffffff"
+
+msgsvc -> session: "lookup recipient's gateway"
+session --> msgsvc: "not found (offline)"
+msgsvc -> inbox: "append seq=118 (durable, TTL 30 days)"
+msgsvc -> pushsvc: "trigger wake-up push"
+pushsvc -> device: "silent/data push (APNs/FCM)"
+device -> gateway: "app wakes, reconnects wss://"
+gateway -> session: "register new session"
+device -> msgsvc: "sync request: since last_seq=117"
+msgsvc -> inbox: "fetch unread since seq=117"
+inbox --> msgsvc: "[seq=118]"
+msgsvc --> device: "deliver queued messages, in seq order"
+`}
+/>
+
+- **The push notification is a wake-up signal, not the transport.** The
+  payload delivered by APNs/FCM is typically empty or minimal (just
+  enough to trigger the OS to wake the app) — the actual message content
+  never leaves the offline inbox until the client reconnects over its own
+  authenticated WebSocket and explicitly syncs. Putting real message
+  content inside a push payload would mean trusting the push provider
+  with plaintext content and losing the durability guarantee if the push
+  itself is dropped, which push delivery doesn't promise the way this
+  system's own inbox does.
+- **The offline inbox is a durable, per-recipient queue**, not a
+  best-effort cache — the same store the message service already writes
+  to at send time (per the persist-before-ack step above), just read from
+  a different angle: "everything not yet delivered to recipient X,"
+  bounded by a retention window (e.g. 30 days) after which an
+  unreachable account's backlog is dropped.
+- **Reconnect sync uses the per-conversation sequence number.** The
+  client tells the server the last sequence number it has for each
+  conversation; the server returns everything after that number, in
+  order — the same ordering mechanism from the delivery-guarantee deep
+  dive doing double duty here as a resumption cursor, rather than a
+  separate "what did I miss" mechanism.
+
+<QuizItem
+  question="Why doesn't the push notification itself carry the message text, since APNs/FCM could technically deliver a short payload?"
+  answer="Push delivery is best-effort and the provider is a third party the client has no durability guarantee from — if the push is dropped, content inside it is gone. Keeping the push as a content-free wake-up signal and the actual message in the durable offline inbox means a dropped push only delays delivery (the client still syncs its full backlog on its next connect), never loses a message."
+/>
+
+### Message storage
+
+- **Write-heavy, append-mostly, partitioned by conversation.** Messages
+  are essentially never updated once written (only their separate
+  read-receipt status changes, per the delivery-guarantee deep dive), so
+  the store is optimized for high-throughput appends rather than
+  in-place updates. Partitioning by `conversation_id` keeps every message
+  in one conversation physically close together, which matters directly
+  for the next point.
+- **Scroll-back access shapes the schema, not just the write path.**
+  "Show me the last 50 messages in this conversation, then the 50 before
+  that" is the dominant read pattern — a query that wants messages for
+  one conversation, ordered by sequence number, in contiguous chunks. A
+  wide-column store keyed by `conversation_id` with `seq` as the sort key
+  (or an equivalent partition/sort-key design in a document store) serves
+  that access pattern directly; a single flat `messages` table with a
+  global index would force cross-partition scatter-gather for the exact
+  query this system runs constantly.
+- **Separate storage for hot (recent) vs. cold (old) history** is a
+  natural extension once the schema above is in place: recent messages
+  stay on fast storage close to the delivery path, older history can move
+  to cheaper storage, since scroll-back into last year's messages is far
+  rarer and can tolerate higher latency than the last 50 messages loading
+  when a conversation opens.
+
+### End-to-end encryption (conceptual placement only)
+
+- **The server relays ciphertext it cannot read.** Encryption and
+  decryption both happen on the client — the sender encrypts before the
+  message ever leaves the device, and only the recipient's device can
+  decrypt it. Every component in the architecture diagram above (message
+  service, queue, message store) stores and moves an opaque encrypted
+  blob; none of them need, or get, the plaintext.
+- **This changes what "the server" can and can't do.** Search across
+  message content, spam-scanning message text, or generating a link
+  preview server-side are all *harder or impossible* once the server
+  never sees plaintext — a real constraint this design accepts rather
+  than works around, matching the non-goal in this lesson's scope.
+- **The key-exchange and ratcheting protocol itself is explicitly not
+  designed here** — only where the encryption boundary sits in the
+  architecture (client-to-client, opaque to every server component) is in
+  scope for this lesson, per this case study's stated boundaries.
+
+## Trade-offs
+
+<CompareTable
+  title="Group-chat fan-out strategy"
+  rows={[
+    {
+      approach: "Fan-out-on-write",
+      pros: ["Low latency for online recipients — same push path as a 1:1 message", "Simple: one code path handles delivery for both online and offline members"],
+      cons: ["Write amplification: one send becomes up to N writes", "Expensive for very large groups/broadcast channels"],
+    },
+    {
+      approach: "Fan-out-on-read",
+      pros: ["No write amplification — message written once regardless of member count", "Scales cleanly to very large broadcast-style groups"],
+      cons: ["Online members no longer get an instant push — they must poll or be separately notified", "Adds latency to the common small-group case, which doesn't need it"],
+    },
+    {
+      approach: "Hybrid by group size",
+      pros: ["Small/medium groups (the common case) keep instant push delivery", "Large broadcast groups avoid the write storm that would overwhelm the delivery queue"],
+      cons: ["Two code paths to build, test, and operate instead of one", "Needs a defined size threshold that itself becomes a tuning knob"],
+      chosenBecause: "Matches the actual traffic shape — most groups are small and latency-sensitive, a small minority are huge and throughput-sensitive — instead of optimizing the whole system for either extreme alone.",
+    },
+  ]}
+/>
+
+<CompareTable
+  title="Where connection/session state lives"
+  rows={[
+    {
+      approach: "Gateway-local session state (fully sticky)",
+      pros: ["No network hop to look up a user's connection — fastest possible local read", "Simple mental model: one process owns everything about its connected users"],
+      cons: ["Losing a gateway process loses the routing knowledge for every user on it, not just their sockets", "Failover requires every other gateway to somehow learn what the dead one knew"],
+    },
+    {
+      approach: "Externalized session/routing store (Redis), gateway holds only the raw socket",
+      pros: ["A gateway crash only forces reconnects — the routing record survives in Redis and gets rewritten on reconnect", "Any gateway can look up any user's current connection, not just the one that accepted it"],
+      cons: ["Every routing lookup and update is a network hop to Redis instead of a local memory read", "Redis itself becomes a dependency the whole connection path relies on"],
+      chosenBecause: "A held-open connection is unavoidably sticky to one machine already (that's physics, not a choice) — externalizing everything else means a gateway failure costs a reconnect, never a lost routing record or a stuck message.",
+    },
+  ]}
+/>
+
+<CompareTable
+  title="Real-time transport"
+  rows={[
+    {
+      approach: "WebSocket (primary)",
+      pros: ["Full-duplex — server pushes instantly, no request to re-issue per message", "One long-lived connection instead of a new HTTP request per update"],
+      cons: ["Some corporate/carrier networks and older proxies block or mishandle persistent upgraded connections", "Needs its own heartbeat mechanism, since it doesn't inherit HTTP's request/response liveness signal"],
+    },
+    {
+      approach: "Long-polling / HTTP fallback",
+      pros: ["Works through networks and proxies that block WebSocket upgrades", "No new protocol support required on either end — it's just HTTP"],
+      cons: ["Higher latency — pays a request/response round trip's overhead per update", "Higher server-side connection churn — the client re-opens a request after every response"],
+      chosenBecause: "Kept only as a fallback for clients on WebSocket-hostile networks, not the primary path — the latency and churn cost is accepted for a minority of connections rather than paid by everyone.",
+    },
+  ]}
+/>
+
+<CompareTable
+  title="Offline message sync mechanism"
+  rows={[
+    {
+      approach: "Push straight to the live connection",
+      pros: ["Lowest possible latency — no round trip needed once the socket is open", "Simple: the same delivery path as any other online message"],
+      cons: ["Only works if the recipient already has a live connection — no help for a closed app"],
+    },
+    {
+      approach: "Client syncs from its last sequence number on reconnect",
+      pros: ["Works regardless of how long the client was offline", "Reuses the same per-conversation sequence number already used for ordering — no separate 'what did I miss' mechanism"],
+      cons: ["Adds latency between reconnect and the backlog actually rendering", "Requires the client to reliably persist its own last-seen sequence number per conversation"],
+      chosenBecause: "The two aren't actually competing — push-to-live handles the online case, and reconnect sync is what makes offline delivery correct at all; the design uses both, not one instead of the other.",
+    },
+  ]}
+/>
+
+## Worked example: one message, two very different recipients
+
+Alice sends one message to her group "Trip" (three members: Alice, Bob,
+Carol). Bob has the app open right now. Carol's phone has been off for
+an hour.
+
+<D2Diagram
+  title="One group message, mixed online/offline delivery, with a read receipt"
+  type="sequence"
+  chart={`shape: sequence_diagram
+alice: "Alice (sender)"
+msgsvc: "Message Service"
+store: "Message Store"
+bob: "Bob (online)"
+inbox: "Offline Inbox"
+pushsvc: "Push Service"
+carol: "Carol (offline)"
+
+alice.style.fill: "#3b6fd6"
+alice.style.font-color: "#ffffff"
+bob.style.fill: "#3b6fd6"
+bob.style.font-color: "#ffffff"
+carol.style.fill: "#3b6fd6"
+carol.style.font-color: "#ffffff"
+msgsvc.style.fill: "#0e7c86"
+msgsvc.style.font-color: "#ffffff"
+store.style.fill: "#b23a48"
+store.style.font-color: "#ffffff"
+inbox.style.fill: "#b23a48"
+inbox.style.font-color: "#ffffff"
+pushsvc.style.fill: "#0e7c86"
+pushsvc.style.font-color: "#ffffff"
+
+alice -> msgsvc: "send to Group 'Trip' (client_msg_id=xyz)"
+msgsvc -> store: "persist, assign conv_seq=118"
+store --> msgsvc: "ack"
+msgsvc --> alice: "check-mark: sent"
+msgsvc -> bob: "deliver seq=118 (live socket)"
+bob --> msgsvc: "delivered ack"
+msgsvc --> alice: "double check-mark: delivered (Bob)"
+msgsvc -> inbox: "append seq=118 for Carol"
+msgsvc -> pushsvc: "trigger push for Carol"
+pushsvc -> carol: "wake-up signal (APNs/FCM)"
+carol -> msgsvc: "reconnect, sync since seq=117"
+msgsvc -> inbox: "fetch queued for Carol"
+inbox --> msgsvc: "[seq=118]"
+msgsvc --> carol: "deliver seq=118"
+carol --> msgsvc: "delivered ack"
+msgsvc --> alice: "double check-mark: delivered (Carol)"
+bob -> msgsvc: "opens chat (reads message)"
+msgsvc --> alice: "blue check-marks: read (Bob)"
+`}
+/>
+
+Alice's client only ever sees one message go out — `conv_seq=118`,
+assigned once, at the moment the message service persists it. From
+there, Bob and Carol take completely different paths to the same
+guarantee: Bob's copy rides the live-connection push within
+milliseconds, while Carol's copy sits in the durable offline inbox for
+an hour, survives however many server restarts happen in that hour, and
+gets delivered the moment she reconnects and syncs from `seq=117`
+forward. Both still land as `seq=118` in the same position in the
+conversation, and both independently update Alice's per-recipient
+delivery receipt — Carol's "delivered" doesn't arrive until she's back
+online, and her "read" receipt (not shown) would follow only once she
+actually opens the conversation, same as Bob's.
+
+## Interview angle
+
+**"How do you scale presence to hundreds of millions of users without a
+presence-update storm on every reconnect?"** Two levers, both covered
+above: narrow the fan-out (push status only to mutual contacts with that
+conversation open, not a whole contact list) and accept staleness
+(batch/debounce updates over a couple of seconds instead of pushing every
+flicker instantly). The naive version — broadcast every connect/disconnect
+to every contact immediately — is exactly what those two levers exist to
+avoid.
+
+**"What happens when a user sends a message and the network drops before
+the ack?"** The client doesn't know whether the message reached the
+server or not, so it can't safely assume either outcome — it has to
+retry. That retry is only safe because of the at-least-once + client-ID
+dedup mechanism from the delivery-guarantee deep dive: if the original
+send actually succeeded server-side, the retry is recognized as a
+duplicate `client_msg_id` and returns the existing message's status
+instead of creating a second one, so retrying blind is always the right
+move.
+
+**"How would you support message search across a user's entire
+history?"** Not covered as a full section in this lesson, but worth
+naming: the message store above is optimized for conversation-ordered
+scroll-back, not full-text search, so search typically needs a separate
+index (e.g. a search-optimized store keyed by user, populated
+asynchronously off the same write path) rather than querying the primary
+message store directly — and, per the end-to-end-encryption deep dive,
+server-side search over content becomes impossible once the server never
+sees plaintext, which is exactly why some real chat apps only support
+on-device search.
+
+## Practice & Self-Check
+
+### Recap quiz
+
+<QuizItem
+  question="What piece of state makes the connection-gateway tier different from a typical stateless API server tier?"
+  answer="The user_id -> gateway_id routing mapping — which physical server holds which user's live WebSocket connection. A stateless API tier has no equivalent, since any instance can serve any request; a chat gateway can only push to a user through the one specific machine holding their socket."
+/>
+
+<QuizItem
+  question="Why does this design use a per-conversation sequence number instead of a global one shared across all conversations?"
+  answer="The ordering requirement is only per-conversation — messages in unrelated conversations never need to compare against each other. A single global counter would force every message in the entire system to serialize through one shared counter, an unnecessary bottleneck when each conversation only needs to stay ordered relative to itself."
+/>
+
+<QuizItem
+  question="A message is written to the message store but the process crashes before acknowledging the sender. What happens next, and why is it safe?"
+  answer="The sender's client, having gotten no ack, retries the send with the same client_msg_id. The message service sees a duplicate client_msg_id for that conversation and returns the existing message's status instead of writing a second copy — safe specifically because dedup is keyed on the client-generated ID, not on whether the network happened to duplicate the request."
+/>
+
+<QuizItem
+  question="Why is the push notification payload typically empty or minimal, rather than containing the actual message text?"
+  answer="Push delivery through a third-party provider (APNs/FCM) is best-effort with no durability guarantee from this system's side — if the push is lost, anything only carried inside it is lost too. Keeping push as a content-free wake-up signal means the real message stays safely in the durable offline inbox and is fetched over an authenticated connection regardless of whether the push itself succeeds."
+/>
+
+<QuizItem
+  question="A small 6-person group and a 100,000-member broadcast channel both send messages. Why might they be handled by different fan-out strategies rather than one strategy for all groups?"
+  answer="Fan-out-on-write costs one write per member — trivial at 6, but 100,000 writes per message would overwhelm the delivery queue. A hybrid strategy keeps fan-out-on-write for the common small/medium case (fast, simple) and switches large broadcast-style groups to fan-out-on-read, trading some latency to avoid the write storm."
+/>
+
+<QuizItem
+  question="Why does the connection-routing table live in Redis instead of only in each gateway server's own memory?"
+  answer="A held-open socket is unavoidably pinned to one machine, but everything else about a user's session doesn't have to be. Keeping the routing record external means losing a gateway server only forces its users to reconnect — the record of who they are and how to reach them survives and gets rewritten by the reconnect, instead of being lost along with the crashed process's memory."
+/>
+
+### Open design challenge
+
+**Extend the design to support disappearing messages** — a per-conversation
+setting where every message sent auto-deletes, on all of a user's
+devices, N hours after it was sent (a real WhatsApp feature). Think
+through: where does the "delete at" timestamp get set and by what
+(sender's clock or server's clock)? What actually has to happen for a
+message to be "gone" — does it need to disappear from the message store,
+every device's local cache, and the offline inbox, or just some of
+those? What happens to a message that was queued in the offline inbox for
+a recipient who was unreachable for longer than N hours — does it still
+get delivered, or does it expire before ever reaching them? And how does
+a newly linked device (multi-device sync, added after the message was
+sent) end up without a copy of a message that already disappeared
+everywhere else?
+
+<details>
+<summary>Reference approach (click to reveal)</summary>
+
+- **Setting the expiry**: stamp `expires_at = server_persist_time + N
+  hours` using the message service's own clock at the moment it persists
+  the message (the same durable-write step already in this design) —
+  never the sender's device clock, for the same clock-skew reason
+  `conv_seq` isn't based on client timestamps either.
+- **Deleting everywhere it's stored**: the message row in the message
+  store gets a TTL (or a background sweep job matching Ticketmaster-style
+  reapers) tied to `expires_at`; any offline-inbox entry for that message
+  gets the same TTL so it can't outlive its own expiry sitting in a
+  queue; each client, on receiving the message, schedules a local delete
+  at `expires_at` too, so it disappears from on-screen history without
+  waiting for a server round trip at the exact expiry instant.
+- **A message that expires before ever reaching an offline recipient**:
+  the offline-inbox TTL from the point above means it should expire, not
+  linger — if Carol reconnects after `expires_at` has already passed, the
+  reconnect-sync fetch (from the offline-delivery deep dive) simply
+  shouldn't return that message at all, exactly as if it had never been
+  queued. This is a deliberate product choice, not an edge case to patch
+  around: "disappearing" has to mean disappearing even for someone who
+  was offline the whole time.
+- **A newly linked device after the message already disappeared**: since
+  a disappearing message is never expected to persist long-term, a
+  device linked after `expires_at` simply never receives it via history
+  sync — multi-device sync only replays what's still in the message
+  store/offline inbox at sync time, and an expired message has already
+  been removed from both, so there's nothing inconsistent to reconcile,
+  only content that legitimately no longer exists anywhere.
+
+</details>
+
+<Rubric
+  items={[
+    "Set the expiry timestamp from the server's own persist-time clock, not the sender's device clock, and explained why",
+    "Addressed all three places a message can persist (message store, offline inbox, each client's local copy), not just one",
+    "Covered the case of a message expiring before it ever reaches an offline recipient, and made a definite call (does it deliver or not)",
+    "Explained why a newly linked device doesn't end up in an inconsistent state relative to an already-expired message",
+  ]}
+/>
+
+**Self-score band:** 4/4 rubric items ticked — interview-ready; 2–3 —
+practicing, revisit the offline-inbox-expiry case specifically; 0–1 —
+novice, re-read the message-delivery-guarantee and offline-delivery deep
+dives before retrying.
