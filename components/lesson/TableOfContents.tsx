@@ -11,6 +11,7 @@ interface Heading {
 export function TableOfContents({ containerId }: { containerId: string }) {
   const [headings, setHeadings] = useState<Heading[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [progress, setProgress] = useState(0);
 
   useEffect(() => {
     const container = document.getElementById(containerId);
@@ -48,6 +49,10 @@ export function TableOfContents({ containerId }: { containerId: string }) {
         }
       }
       setActiveId(current);
+
+      const doc = document.documentElement;
+      const scrollable = doc.scrollHeight - doc.clientHeight;
+      setProgress(scrollable > 0 ? Math.min(100, Math.round((doc.scrollTop / scrollable) * 100)) : 0);
     }
     function scheduleUpdate() {
       if (ticking) return;
@@ -79,6 +84,12 @@ export function TableOfContents({ containerId }: { containerId: string }) {
       <p className="font-mono text-xs font-semibold tracking-wide text-muted-foreground uppercase">
         On this page
       </p>
+      <div className="mt-2 h-1 overflow-hidden rounded-full bg-line" role="presentation">
+        <div
+          className="h-full rounded-full bg-brand transition-[width] duration-150"
+          style={{ width: `${progress}%` }}
+        />
+      </div>
       <ul className="mt-3 flex flex-col gap-1 border-l border-line">
         {headings.map((heading) => {
           const active = heading.id === activeId;
@@ -89,7 +100,7 @@ export function TableOfContents({ containerId }: { containerId: string }) {
                 className={cn(
                   "-ml-px block border-l-2 py-1 pl-3 text-sm transition-colors",
                   active
-                    ? "border-brand font-semibold text-foreground"
+                    ? "border-brand font-semibold text-brand"
                     : "border-transparent text-muted-foreground hover:border-line hover:text-foreground",
                 )}
               >

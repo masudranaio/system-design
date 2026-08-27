@@ -33,6 +33,15 @@ describe("TableOfContents", () => {
     expect(links[1]).toHaveAttribute("href", "#architecture");
   });
 
+  it("renders a progress bar starting at zero width", () => {
+    renderArticleWithHeadings();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    render(<TableOfContents containerId="lesson-article" />, { container });
+
+    expect(document.querySelector<HTMLElement>("[role=presentation] > div")!.style.width).toBe("0%");
+  });
+
   it("renders nothing (no nav) when the target article has no headings", () => {
     document.body.innerHTML = `<article id="lesson-article"></article>`;
     const container = document.createElement("div");

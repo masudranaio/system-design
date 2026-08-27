@@ -7,8 +7,11 @@ export function Sidebar() {
   const sections = buildNavTree(contentRoot);
 
   return (
-    <div className="hidden shrink-0 border-r border-line bg-sidebar-surface md:sticky md:top-16 md:block md:max-h-[calc(100vh-4rem)] md:w-56 md:overflow-y-auto">
-      <nav className="px-4 py-6" aria-label="Course navigation">
+    <div className="hidden shrink-0 bg-sidebar-surface md:sticky md:top-16 md:block md:max-h-[calc(100vh-4rem)] md:w-56 md:overflow-y-auto">
+      <nav
+        className="m-3 rounded-lg border border-line bg-surface p-3"
+        aria-label="Course navigation"
+      >
         <SidebarNav sections={sections} />
       </nav>
     </div>

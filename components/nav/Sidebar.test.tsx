@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { Sidebar } from "./Sidebar";
+import { SidebarNav } from "./SidebarNav";
 
 vi.mock("@/lib/content", () => ({
   buildNavTree: () => [
@@ -33,5 +34,13 @@ describe("Sidebar", () => {
     expect(inactiveLink).not.toHaveAttribute("aria-current");
 
     expect(screen.getByText("No lessons yet")).toBeInTheDocument();
+  });
+
+  it("gives each section an icon chip in its track color and a lesson count", () => {
+    render(<SidebarNav sections={[{ title: "Low-Level Design", items: [
+      { href: "/lld/a", label: "A" }, { href: "/lld/b", label: "B" },
+    ] }]} />);
+    expect(screen.getByText("2")).toBeInTheDocument();
+    expect(screen.getByTestId("section-chip-Low-Level Design").className).toContain("bg-track-lld/12");
   });
 });
