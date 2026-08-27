@@ -537,3 +537,76 @@ rendering each extracted `chart={...}` block with the same
 `layout: "dagre"` option `render-d2.ts` uses — all 9 compiled and
 rendered cleanly (one label-quoting fix applied, noted above) before
 the diagrams were considered final.
+
+**`hld.mdx` — retrofit pass, 2026-08-27.** Retrofitted to the repo's
+higher content standard (D2 diagrams, granular mechanism coverage,
+`CompareTable`/`KeyStat` over prose). All 3 original Mermaid
+`<DiagramPanel>` diagrams (one `graph TD` architecture diagram, one
+`graph LR` cache-path diagram, one `sequenceDiagram` worked-example
+trace) converted to D2, plus 5 new diagrams added for granularity the
+updated content standard calls for. Walked the "HLD Checklist
+(`hld.mdx`) — secondary side" section above item by item; all still
+ticked, nothing dropped:
+
+- Problem framing / requirements & capacity estimate: unchanged in
+  substance. The two back-of-envelope derivations (500,000 QPS peak,
+  450,000-compartment network total) were pulled out of paragraph form
+  into two `KeyStat` components carrying the same math verbatim.
+- Architecture diagram: the single `graph TD` split into three focused
+  D2 `type="architecture"` diagrams per the "one diagram, one concern"
+  rule — client/gateway/service-fan-out, cache-and-data tier
+  (Postgres geo-shard + time-series store), and IoT fleet connectivity
+  (MQTT telemetry + TLS/X.509 unlock path) — covering every element the
+  checklist lists (client apps, kiosk, all 6 named microservices,
+  3-tier cache, geo-sharded Postgres, time-series store, MQTT +
+  TLS/X.509) with explicit role colors per CONTENT-GUIDE's table.
+- Deep dives, geo-discovery + reservation: expanded from prose into a
+  new small D2 diagram contrasting a naive geometric scan against the
+  geohash-prefix lookup, plus a new D2 sequence diagram showing the
+  optimistic-concurrency race between two customers over one
+  compartment (concrete version-number trace, not just described in
+  prose). Regional reservation queues covered in bullets as before.
+- Deep dives, caching: the single cache-path diagram converted to D2 and
+  expanded from 2 explained mechanisms (write-through, geo-sharding) to
+  3 branches per the updated content standard — write-through
+  propagation, geo-sharding at the source of truth, and a new cache
+  stampede branch (single-flight recompute on a hot metro's L3
+  snapshot) that the original lesson didn't cover.
+- Deep dives, IoT offline resilience: converted the prose-only
+  description into a new D2 architecture diagram of the station-side
+  mechanisms (local code cache, local retry queue, battery backup,
+  reconcile-on-reconnect), plus the fail-secure/fail-open trade-off
+  reformatted as a `CompareTable`.
+- Trade-offs: all 4 original pairs preserved verbatim in substance,
+  consolidated into one `CompareTable` (consistency vs. availability
+  kept as prose since it's the CAP-theorem framing paragraph, the other
+  3 pairs — local vs. centralized verification, conservative vs.
+  probabilistic reservation, precomputed vs. on-demand snapshots — as
+  table rows).
+- Worked example: the single long `sequenceDiagram` split into three D2
+  `type="sequence"` diagrams (discovery through the cache tiers; reserve
+  + deposit through the offline blip; reconciliation), each its own
+  concern, all 4 checklist beats preserved across the three. One label
+  (`Locker Station #4471`) needed re-quoting — an unquoted `#` inside a
+  D2 node label is read as a comment start, breaking the block —
+  confirmed via a local compile check (see below), semantics unchanged.
+- Interview angle, recap quiz, open design challenge, rubric: carried
+  over verbatim, plus one new recap quiz item added for the cache
+  stampede branch introduced in the caching deep dive (8 -> 9 recap
+  items).
+- Diagram count: 10 total D2 diagrams (3 architecture in the main
+  network-architecture section, 1 geo-discovery contrast + 1 OCC
+  sequence, 1 cache-path architecture, 1 offline-resilience
+  architecture, 3 worked-example sequence diagrams) — well above the
+  4-5 floor, versus 3 Mermaid diagrams in the pre-retrofit version.
+
+Verification: all 10 D2 chart sources were extracted from the finished
+`hld.mdx` and compiled + rendered with `@terrastruct/d2`
+(`new D2().compile(source, { layout: "dagre" })` followed by
+`.render()`, matching `render-d2.ts`'s options) via a scratch Node
+script in this worktree, deleted afterward. All 10 compiled and
+rendered cleanly (one label-quoting fix applied, noted above) before
+the diagrams were considered final. Per CLAUDE.md, live `pnpm dev` /
+Playwright verification applies to app-shell/component work, not
+content-only `.mdx` changes — the D2 compile/render check above is the
+verification for this retrofit.
