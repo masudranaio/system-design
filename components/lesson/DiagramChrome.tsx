@@ -32,21 +32,25 @@ function injectDiagram(container: HTMLDivElement | null, svgMarkup: string | nul
   applyDiagramRoleClasses(svg);
 
   // D2's output <svg> carries a viewBox but no width/height attributes
-  // (unlike Mermaid's, which sets its own inline max-width) — without a
-  // cap, a plain block-level <svg> with only a viewBox stretches to fill
-  // 100% of its container's width. For a tall/narrow diagram (D2 defaults
-  // to top-to-bottom layout) that means a huge height, since the aspect
-  // ratio is preserved: confirmed live, a 218x480 diagram in a ~1100px
-  // panel rendered ~2600px tall, showing only its first node on screen.
-  // Cap max-width to the diagram's own authored pixel width so it only
-  // ever shrinks (for narrow viewports), never stretches past its
-  // natural size — the same effect Mermaid gets automatically.
+  // (unlike Mermaid's, which sets its own inline max-width) — without an
+  // explicit width, a plain block-level <svg> with only a viewBox
+  // stretches to fill 100% of its container's width, and since the
+  // aspect ratio is preserved that also scales its height (and its text)
+  // by the same factor. That cuts both ways and both were confirmed live:
+  // a tall/narrow diagram (218x480) stretched to ~2600px tall in an
+  // ~1100px panel; a wide diagram (2700+px) shrank down to fit a
+  // ~1200px panel, scaling its labels down ~60% to the point of being
+  // unreadable without using the zoom controls below. Rendering the SVG
+  // at its own authored pixel width — never stretched, never shrunk —
+  // fixes both: the pan/zoom wrapper's overflow-x-auto (and the zoom
+  // controls) handle a diagram wider than its panel, exactly like the
+  // fullscreen dialog already does.
   const viewBox = svg.getAttribute("viewBox");
   const intrinsicWidth = viewBox ? Number(viewBox.split(/\s+/)[2]) : NaN;
-  if (Number.isFinite(intrinsicWidth) && intrinsicWidth > 0) {
-    svg.style.maxWidth = `${intrinsicWidth}px`;
-  }
-  svg.style.width = "100%";
+  svg.style.width =
+    Number.isFinite(intrinsicWidth) && intrinsicWidth > 0
+      ? `${intrinsicWidth}px`
+      : "100%";
   svg.style.height = "auto";
 }
 
