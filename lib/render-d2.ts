@@ -1,17 +1,19 @@
 import { D2 } from "@terrastruct/d2";
 
-let d2Instance: D2 | null = null;
-
-function getD2(): D2 {
-  if (!d2Instance) d2Instance = new D2();
-  return d2Instance;
-}
-
 export type RenderD2Result = { svg: string } | { error: string };
 
 export async function renderD2(source: string): Promise<RenderD2Result> {
   try {
-    const d2 = getD2();
+    // A shared D2 instance is not safe under concurrent compile()/render()
+    // calls: React renders sibling Server Components (each lesson's
+    // multiple <D2Diagram>s) concurrently, and calling into one WASM
+    // instance from several in-flight calls at once deadlocks — confirmed
+    // live (9 concurrent calls against one shared instance: only 1 of 9
+    // ever returned, even after 30s). A fresh instance per call costs an
+    // extra ~1-2s of WASM instantiation but renders correctly and stays
+    // fast in aggregate (9 diagrams, each its own instance, all resolved
+    // concurrently in ~2.3s total).
+    const d2 = new D2();
     const compiled = await d2.compile(source, { options: { layout: "dagre" } });
     const svg = await d2.render(compiled.diagram, {
       ...compiled.renderOptions,
