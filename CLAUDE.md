@@ -14,9 +14,14 @@ are in turn superseded by
 [docs/superpowers/plans/2026-08-27-visual-design-system-refresh.md](docs/superpowers/plans/2026-08-27-visual-design-system-refresh.md);
 approved visual reference at
 [docs/superpowers/design-previews/2026-08-27-transit-preview.html](docs/superpowers/design-previews/2026-08-27-transit-preview.html),
-open it directly in a browser). Content quality rules (prose, diagrams,
-quizzes, self-check answers) live in [CONTENT-GUIDE.md](CONTENT-GUIDE.md)
-— read before drafting any lesson's actual content, not just its plan.
+open it directly in a browser). Lesson *shape* — the versioned "evolution spine" every lesson is built
+around — is defined by
+[docs/superpowers/specs/2026-08-27-lesson-evolution-format-design.md](docs/superpowers/specs/2026-08-27-lesson-evolution-format-design.md),
+which supersedes the earlier specs' section orders. Content quality and
+authoring rules (prose, tables, code blocks, diagrams, cloud/OSS
+mapping, API and schema sections, quizzes, self-check answers) live in
+[CONTENT-GUIDE.md](CONTENT-GUIDE.md) — read both before drafting any
+lesson's actual content, not just its plan.
 Lesson-by-lesson build list and progress live in
 [SYLLABUS.md](SYLLABUS.md). Read all four before starting work in this
 repo if they're not already in context.
