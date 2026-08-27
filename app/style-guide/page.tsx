@@ -2,6 +2,7 @@ import { QuizItem } from "@/components/lesson/QuizItem";
 import { Rubric } from "@/components/lesson/Rubric";
 import { DiagramPanel } from "@/components/lesson/DiagramPanel";
 import { D2Diagram } from "@/components/lesson/D2Diagram";
+import { Stage } from "@/components/lesson/Stage";
 
 export default function StyleGuidePage() {
   return (
@@ -33,6 +34,25 @@ service: Service {
 client -> gateway -> service
 `}
       />
+
+      <section>
+        <Stage
+          n={1}
+          title="One server, one database"
+          verdict="Correct to ~200 vehicles/day across two gates; a single failure takes the whole lot offline."
+        />
+        <Stage
+          n={2}
+          title="Cached availability counters"
+          verdict="Fixes the read load on the ticket DB; the cache can now drift from the source of truth."
+        />
+        <Stage
+          n={3}
+          title="Availability service with reconciliation"
+          verdict="Closes the drift window to one reconcile interval; adds an event pipeline to operate."
+          final
+        />
+      </section>
 
       <QuizItem
         question="Why does DiagramPanel take a chart string instead of MDX children?"
