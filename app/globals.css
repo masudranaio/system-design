@@ -20,6 +20,14 @@
   --color-state-warn: #a76a10;
   --color-state-bad: #a63241;
 
+  /* Quiz question/answer accents: brand pink reads as "asking," green as
+     "resolved" — aliased to existing tokens so both themes stay tuned
+     without a second set of contrast checks. */
+  --color-quiz-question: var(--color-brand);
+  --color-quiz-question-soft: var(--color-brand-soft);
+  --color-quiz-answer: var(--color-state-ok);
+  --color-quiz-answer-soft: #e8f6f0;
+
   /* Diagrams are printed artifacts: the canvas stays light in both
      themes so one static palette can serve D2 (whose SVG cannot react
      to a theme at all) and Mermaid alike. See spec §5.1. */
@@ -69,6 +77,11 @@
     --color-state-warn: #f9b64e;
     --color-state-bad: #f78a95;
 
+    --color-quiz-question: var(--color-brand);
+    --color-quiz-question-soft: var(--color-brand-soft);
+    --color-quiz-answer: var(--color-state-ok);
+    --color-quiz-answer-soft: #0f2a22;
+
     --color-diagram-canvas: #f2f1f4;
   }
 }
@@ -92,6 +105,11 @@
   --color-state-ok: #4fd1a5;
   --color-state-warn: #f9b64e;
   --color-state-bad: #f78a95;
+
+  --color-quiz-question: var(--color-brand);
+  --color-quiz-question-soft: var(--color-brand-soft);
+  --color-quiz-answer: var(--color-state-ok);
+  --color-quiz-answer-soft: #0f2a22;
 
   --color-diagram-canvas: #f2f1f4;
 }
@@ -131,6 +149,10 @@
   --color-state-ok: var(--color-state-ok);
   --color-state-warn: var(--color-state-warn);
   --color-state-bad: var(--color-state-bad);
+  --color-quiz-question: var(--color-quiz-question);
+  --color-quiz-question-soft: var(--color-quiz-question-soft);
+  --color-quiz-answer: var(--color-quiz-answer);
+  --color-quiz-answer-soft: var(--color-quiz-answer-soft);
   --color-diagram-canvas: var(--color-diagram-canvas);
   --font-sans: var(--font-sans);
   --font-display: var(--font-display);
@@ -151,6 +173,20 @@ body {
 
 .panel-breakout {
   width: 100%;
+}
+
+.quiz-item {
+  border-radius: var(--radius-md);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+  transition: box-shadow 150ms ease;
+}
+
+.quiz-item + .quiz-item {
+  margin-top: 0.625rem;
+}
+
+.quiz-item:hover {
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.08);
 }
 
 h1, h2, h3, h4, h5, h6 {
