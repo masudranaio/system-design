@@ -59,27 +59,82 @@ the same show in the same second.
 - [x] Back-of-envelope math for the scale numbers (~1M concurrent users,
       ~100k seat-view req/s, ~10k write TPS)
 
-### 3. Core content — architecture diagram
+### 3. Core content — architecture diagrams
 
-- [x] Mermaid diagram of the request flow: client → API gateway →
-      search/catalog service → seat inventory service →
-      booking/reservation service → payment service → notification
+Retrofit note (2026-08-27, content-format standard): the original single
+Mermaid flowchart folded three concerns (overall topology, the read
+path's internals, the write path's internals) into one diagram. Split
+per the "one diagram, one concern" rule — each gets its own small D2
+diagram (`<D2Diagram>`, role-colored per `CONTENT-GUIDE.md`'s table):
+
+- [x] D2 diagram: **system topology** — client → CDN/API gateway →
+      virtual waiting room → {search/catalog service, seat inventory
+      service}, high level only (no cache/DB internals)
+- [x] D2 diagram: **search & catalog read path** — search service,
+      Redis cache (cache-aside), catalog DB read replicas, CDN edge
+- [x] D2 diagram: **checkout write path** — seat inventory service,
+      Redis seat holds, booking/reservation service, booking DB
+      (version column), payment service, message queue, notification
       service
-- [x] Redis for seat holds
-- [x] Message queue for confirmation/notification
-- [x] Per-service datastores
+- [x] Redis for seat holds (covered in checkout write path diagram)
+- [x] Message queue for confirmation/notification (covered in checkout
+      write path diagram)
+- [x] Per-service datastores (covered across the read/write path
+      diagrams)
 
 ### 4. Core content — deep dives
 
-- [x] Seat-hold mechanism: Redis TTL lock + virtual queue in front of
-      seat selection (what Ticketmaster's real system uses)
-- [x] Double-booking prevention: distributed lock + DB-level optimistic
-      version check as defense-in-depth (belt and suspenders)
-- [x] Stampede handling: virtual waiting room, why it's better than
-      letting 100k requests hit inventory directly
-- [x] Search/catalog scaling: caching, read replicas, CDN for event pages
-- [x] Booking→payment flow as a saga: hold → charge → confirm, with
-      timeout-triggered rollback if payment doesn't complete in time
+Retrofit note (2026-08-27): each deep dive below is expanded from a
+single mechanism/one-line treatment to the 2-3 branches a real interview
+conversation would actually go into, per the content-format standard.
+The stampede comparison diagram (previously one diagram with two
+subgraphs) splits into two standalone D2 diagrams, one per scenario.
+
+- [x] **Seat-hold mechanism** — three branches:
+  - [x] `SET NX EX` as an atomic claim (existing)
+  - [x] Why Redis over a Postgres row lock (existing)
+  - [x] NEW: scaling the hold layer across a Redis Cluster — sharding
+        seat-hold keys by event/seat id, and why a multi-seat
+        group-lock Lua script needs same-hash-slot keys (hash tags) to
+        run atomically, tying into the group-booking interview
+        follow-up
+- [x] **Double-booking prevention: defense in depth** — three branches:
+  - [x] Redis lock as the fast first line of defense (existing)
+  - [x] DB-level optimistic version check as the durable backstop
+        (existing)
+  - [x] NEW: idempotency on client/network retries — a retried
+        hold/payment request must not create a second attempt; an
+        idempotency key lets a retry return the original result
+  - [x] NEW: small D2 diagram showing the two independent guard layers
+        (Redis lock, DB version check) and what happens if the first
+        layer is ever wrong
+- [x] **Stampede handling: virtual waiting room** — three branches:
+  - [x] Randomized token admission at on-sale time (existing)
+  - [x] NEW: token-bucket rate limiting at the gateway as a
+        complementary layer upstream of the queue itself
+  - [x] NEW: per-event sharding of the waiting room so one hot on-sale
+        can't starve admission for other concurrent shows
+  - [x] D2 diagram: **without a waiting room** (overload scenario) —
+        split from the original combined diagram
+  - [x] D2 diagram: **with the waiting room** (throttled admission) —
+        split from the original combined diagram
+- [x] **Search & catalog scaling** — three branches, each now its own
+      labeled subsection instead of folded into one paragraph:
+  - [x] CDN edge caching for event pages (existing)
+  - [x] Cache-aside against Redis + DB read replicas (existing)
+  - [x] Cache stampede mitigation: single-flight recompute lock on a
+        popular event's cache-key expiry (existing content, now a
+        named branch rather than a trailing paragraph)
+- [x] **Booking→payment flow as a saga** — three branches:
+  - [x] Happy path: hold → charge → confirm (existing; now its own D2
+        sequence diagram, split from the combined success/rollback one)
+  - [x] Rollback path: payment failure or TTL expiry → compensating
+        actions (existing; now its own D2 sequence diagram)
+  - [x] NEW: orchestration vs. choreography as the saga-coordination
+        trade-off, and why this design picks orchestration (the
+        booking service explicitly coordinates each step) over
+        choreography (services reacting to each other's events) for a
+        short, few-step saga owned by one team
 
 ### 5. Trade-offs
 

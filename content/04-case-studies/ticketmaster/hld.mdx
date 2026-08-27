@@ -7,7 +7,6 @@ on-sale turns "let people buy tickets" into "let a million people try to buy
 the same 20,000 seats in the same ten seconds, and make sure none of them
 gets sold twice."
 
-
 ## Problem framing
 
 Two very different workloads share this system. Almost all the time,
@@ -74,84 +73,166 @@ as designed sections.
 
 **Back-of-envelope math**, working from the scale numbers above:
 
-- A stadium tour on-sale can pull in ~1,000,000 concurrent shoppers in the
-  opening minutes. If each of them is refreshing the seat map or polling an
-  event page roughly once every 10 seconds while deciding, that's
-  1,000,000 ÷ 10s ≈ **100,000 read requests/sec** at peak — matches the
-  target.
-- Of those million shoppers, assume roughly 10% (~100,000 people) are
-  actively trying to lock a specific seat within any given 10-second
-  window — the rest are still scrolling the seat map. That's 100,000 ÷ 10s
-  ≈ **10,000 seat-lock write attempts/sec** — matches the target.
-- That gives a read:write ratio of roughly 100,000:10,000 = **10:1** during
-  the drop itself. On an ordinary day, with no live on-sale, writes (actual
-  purchases) drop to a trickle while search/browse traffic keeps flowing —
-  that's where the **~100:1** ratio in the requirements comes from. The
-  system has to be built for both ratios, not just the average of them.
-- A single arena show has ~20,000 seats. 10,000 write attempts/sec against
-  that few rows means the *hottest* seats (front rows, floor sections) see
-  many contending writers per second on the exact same row — this is the
-  number that rules out anything that serializes on a held database
-  transaction (more on this in Trade-offs).
+<KeyStat
+  value="~100,000 req/s"
+  label="Peak read (seat-view) requests per second"
+  detail="~1,000,000 concurrent shoppers, each refreshing the seat map or polling an event page roughly once every 10 seconds while deciding: 1,000,000 ÷ 10s ≈ 100,000 read requests/sec at peak — matches the target."
+/>
+
+<KeyStat
+  value="~10,000 req/s"
+  label="Peak seat-lock write attempts per second"
+  detail="Roughly 10% of shoppers (~100,000 people) are actively trying to lock a specific seat within any given 10-second window — the rest are still scrolling the seat map. 100,000 ÷ 10s ≈ 10,000 seat-lock write attempts/sec — matches the target."
+/>
+
+<KeyStat
+  value="10:1 → 100:1"
+  label="Read:write ratio, drop vs. ordinary day"
+  detail="100,000:10,000 = roughly 10:1 during the drop itself. On an ordinary day, with no live on-sale, writes (actual purchases) drop to a trickle while search/browse traffic keeps flowing — that's where the ~100:1 ratio in the requirements comes from. The system has to be built for both ratios, not just the average of them."
+/>
+
+<KeyStat
+  value="~20,000 seats"
+  label="Typical arena show inventory"
+  detail="10,000 write attempts/sec against that few rows means the hottest seats (front rows, floor sections) see many contending writers per second on the exact same row — this is the number that rules out anything that serializes on a held database transaction (more on this in Trade-offs)."
+/>
 
 ## Architecture
 
-<DiagramPanel
-  title="Ticketmaster request flow"
+Splitting the system into three focused diagrams instead of one large one:
+the overall request topology, the mostly-read catalog subsystem, and the
+consistency-critical checkout subsystem each carry their own explanatory
+weight and are easier to reason about apart than crammed together.
+
+<D2Diagram
+  title="System topology"
   type="architecture"
-  chart={`flowchart LR
-    Client["Client (web / mobile)"]
-    CDN["CDN + API Gateway"]
-    Queue["Virtual waiting room<br/>throttled admission"]
+  chart={`direction: right
 
-    subgraph Catalog["Search & catalog"]
-      Search["Search / Catalog Service"]
-      SearchCache[("Redis cache<br/>event pages")]
-      CatalogDB[("Catalog DB<br/>read replicas")]
-    end
+client: Client (web / mobile) {
+  icon: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxyZWN0IHdpZHRoPSIxNCIgaGVpZ2h0PSIyMCIgeD0iNSIgeT0iMiIgcng9IjIiIHJ5PSIyIi8+PHBhdGggZD0iTTEyIDE4aC4wMSIvPjwvc3ZnPg=="
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+gateway: CDN + API Gateway {
+  icon: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxjaXJjbGUgY3g9IjEyIiBjeT0iMTIiIHI9IjEwIi8+PHBhdGggZD0iTTIgMTJoMjAiLz48cGF0aCBkPSJNMTIgMmExNS4zIDE1LjMgMCAwIDEgNCAxMCAxNS4zIDE1LjMgMCAwIDEtNCAxMCAxNS4zIDE1LjMgMCAwIDEtNC0xMCAxNS4zIDE1LjMgMCAwIDEgNC0xMHoiLz48L3N2Zz4="
+  style.fill: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+queue: Virtual Waiting Room {
+  icon: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxjaXJjbGUgY3g9IjEyIiBjeT0iMTIiIHI9IjEwIi8+PHBhdGggZD0iTTIgMTJoMjAiLz48cGF0aCBkPSJNMTIgMmExNS4zIDE1LjMgMCAwIDEgNCAxMCAxNS4zIDE1LjMgMCAwIDEtNCAxMCAxNS4zIDE1LjMgMCAwIDEtNC0xMCAxNS4zIDE1LjMgMCAwIDEgNC0xMHoiLz48L3N2Zz4="
+  style.fill: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+search: Search / Catalog Service {
+  icon: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxyZWN0IHdpZHRoPSIyMCIgaGVpZ2h0PSI4IiB4PSIyIiB5PSIyIiByeD0iMiIgcnk9IjIiLz48cmVjdCB3aWR0aD0iMjAiIGhlaWdodD0iOCIgeD0iMiIgeT0iMTQiIHJ4PSIyIiByeT0iMiIvPjxsaW5lIHgxPSI2IiB4Mj0iNi4wMSIgeTE9IjYiIHkyPSI2Ii8+PGxpbmUgeDE9IjYiIHgyPSI2LjAxIiB5MT0iMTgiIHkyPSIxOCIvPjwvc3ZnPg=="
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+inventory: Seat Inventory Service {
+  icon: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxyZWN0IHdpZHRoPSIyMCIgaGVpZ2h0PSI4IiB4PSIyIiB5PSIyIiByeD0iMiIgcnk9IjIiLz48cmVjdCB3aWR0aD0iMjAiIGhlaWdodD0iOCIgeD0iMiIgeT0iMTQiIHJ4PSIyIiByeT0iMiIvPjxsaW5lIHgxPSI2IiB4Mj0iNi4wMSIgeTE9IjYiIHkyPSI2Ii8+PGxpbmUgeDE9IjYiIHgyPSI2LjAxIiB5MT0iMTgiIHkyPSIxOCIvPjwvc3ZnPg=="
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
 
-    subgraph Checkout["Booking & payment"]
-      Inventory["Seat Inventory Service"]
-      Holds[("Redis<br/>seat holds, TTL 600s")]
-      Booking["Booking / Reservation Service"]
-      BookingDB[("Booking DB (Postgres)<br/>version column")]
-      Payment["Payment Service"]
-    end
-
-    MQ[["Message queue"]]
-    Notify["Notification Service"]
-
-    Client --> CDN --> Queue
-    Queue -->|admitted: browse| Search
-    Queue -->|admitted: buy| Inventory
-    Search -->|cache-aside| SearchCache
-    Search --> CatalogDB
-    Inventory -->|SET seat:id NX EX 600| Holds
-    Inventory --> Booking
-    Booking -->|version-checked write| BookingDB
-    Booking --> Payment
-    Booking -->|booking.confirmed event| MQ
-    MQ --> Notify
-  `}
+client -> gateway
+gateway -> queue
+queue -> search: admitted, browse
+queue -> inventory: admitted, buy
+`}
 />
 
 Every request enters through a CDN and API gateway, then the virtual
-waiting room before it ever touches search or inventory — that ordering is
-deliberate and is the subject of the stampede deep dive below. Search and
-catalog browsing is a mostly-read subsystem with its own cache and read
-replicas; booking and payment are a separate subsystem built around a
-Redis-backed hold and a version-checked database write, because that's
-where the correctness guarantee has to live.
+waiting room before it ever touches search or inventory — deliberate
+ordering, covered in the stampede deep dive below. The gateway is a fleet,
+not one machine, sitting behind an L7 (application-layer) load balancer
+that reads each request's path/host and routes it to the right backend
+service, spreading the 100k req/s read spike and 10k req/s write spike
+across many gateway instances. A simple round-robin or least-connections
+algorithm is enough — the gateway layer is stateless, so any instance can
+handle any request, unlike the seat-hold layer below, where routing
+matters.
 
 {/* concept-dependency: HLD-03 not yet built, explained inline */}
-The "API Gateway" box is a fleet, not one machine, sitting behind an L7
-(application-layer) load balancer that reads each request's path/host and
-routes it to the right backend service, spreading the 100k req/s read
-spike and 10k req/s write spike across many gateway instances rather than
-funneling both onto one box. A simple round-robin or least-connections
-algorithm is enough here — the gateway layer is stateless, so any instance
-can handle any request, unlike the seat-hold layer below, where routing
-matters.
+
+<D2Diagram
+  title="Search & catalog read path"
+  type="architecture"
+  chart={`direction: right
+
+cdn: CDN Edge {
+  style.fill: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+search: Search / Catalog Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+cache: Redis Cache (event pages) {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+catalogdb: Catalog DB (read replicas) {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+
+cdn -> search: cache miss only
+search -> cache: cache-aside read/populate
+search -> catalogdb: on cache miss
+`}
+/>
+
+Search and catalog browsing is a mostly-read subsystem: a CDN in front of
+event pages, a cache-aside Redis layer behind that, and read replicas on
+the catalog database. Mechanics covered in its own deep dive below.
+
+<D2Diagram
+  title="Checkout write path"
+  type="architecture"
+  chart={`direction: right
+
+inventory: Seat Inventory Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+holds: Redis (seat holds, TTL 600s) {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+booking: Booking / Reservation Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+bookingdb: Booking DB (Postgres, version column) {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+payment: Payment Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+notify: Notification Service {
+  style.fill: "#4b5262"
+  style.font-color: "#ffffff"
+}
+
+inventory -> holds: SET seat:id NX EX 600
+inventory -> booking: hold acquired
+booking -> bookingdb: version-checked write
+booking -> payment: charge card
+booking -> notify: booking.confirmed event (via MQ)
+`}
+/>
+
+Booking and payment are a separate subsystem built around a Redis-backed
+hold and a version-checked database write, because that's where the
+double-booking guarantee has to live — the subject of the next two deep
+dives.
+
+<Point icon="lock">Redis holds a claimed seat for up to 10 minutes (`TTL 600s`) before it releases automatically.</Point>
+<Point icon="database">The booking DB is a relational store (Postgres) specifically because the version-checked commit needs ACID guarantees.</Point>
+<Point icon="branch">Booking → payment → confirmation is coordinated as a saga, not one database transaction (own deep dive below).</Point>
 
 ## Deep dives
 
@@ -164,20 +245,33 @@ seat A12. The fix is a **time-boxed hold**: claiming a seat sets a
 short-lived lock that reserves it for one buyer and automatically expires
 if they never finish checkout.
 
-Ticketmaster's real system does this with an atomic Redis command:
-`SET seat:evt_42:A12 buyer_id NX EX 600`. Two flags make this work as a
-lock instead of a plain write: `NX` ("not exists") tells Redis to only set
-the key if it isn't already set — so if two buyers race for the same seat,
-the second `SET` simply fails instead of overwriting the first buyer's
-hold — and `EX 600` attaches a 10-minute TTL (time-to-live), so if the
-buyer abandons checkout, the key deletes itself and the seat becomes
-claimable again with no cleanup job required to notice.
+**Branch 1 — the atomic claim.** Ticketmaster's real system does this with
+an atomic Redis command: `SET seat:evt_42:A12 buyer_id NX EX 600`. Two
+flags make this work as a lock instead of a plain write:
 
-Redis is the right place for this, not the booking database, because Redis
-executes commands single-threaded per key — there's no race window between
-"check if the seat is held" and "claim it," the way there would be with a
-naive `SELECT` followed by an `UPDATE`. A `SET ... NX` is one atomic
-operation, typically sub-millisecond, with no transaction held open.
+- `NX` ("not exists") tells Redis to only set the key if it isn't already
+  set — so if two buyers race for the same seat, the second `SET` simply
+  fails instead of overwriting the first buyer's hold.
+- `EX 600` attaches a 10-minute TTL (time-to-live), so if the buyer
+  abandons checkout, the key deletes itself and the seat becomes claimable
+  again with no cleanup job required to notice.
+
+**Branch 2 — why Redis, not the booking database.** Redis executes
+commands single-threaded per key — there's no race window between "check
+if the seat is held" and "claim it," the way there would be with a naive
+`SELECT` followed by an `UPDATE`. A `SET ... NX` is one atomic operation,
+typically sub-millisecond, with no transaction held open.
+
+**Branch 3 — scaling the hold layer across a cluster.** A single Redis
+instance can't sustain 10,000 writes/sec for every hot show at once, so
+seat-hold keys are sharded across a Redis Cluster by key (`seat:evt_42:A12`
+hashes to a slot, spreading load across nodes). This has a direct
+consequence for the group-booking follow-up (see Interview angle): a
+multi-seat lock via a Lua script or `MULTI` transaction only runs
+atomically if every key it touches lives in the *same* hash slot, so
+adjacent-seat keys need a hash tag (e.g. `seat:evt_42:{A}12`,
+`seat:evt_42:{A}13`) forcing them onto one slot — otherwise the cluster
+rejects the multi-key operation outright.
 
 Before a buyer even reaches the seat map, requests are gated through the
 virtual waiting room shown in the architecture diagram — covered in its
@@ -195,35 +289,66 @@ The Redis lock rejects a second buyer for the same seat instantly, but
 treating it as the *only* safeguard is risky: Redis can fail over to a
 replica that hasn't caught up yet, dropping a hold that a client believes
 is still active, and any bug in service code that skips the Redis check
-would go uncaught. So the booking database adds a second, independent
-guarantee at commit time: an **optimistic version check**.
+would go uncaught.
 
-Each seat-inventory row carries a `version` integer. When the booking
-service commits a sale, it doesn't just write `status = 'booked'` — it
-writes `UPDATE seat SET status = 'booked', version = version + 1 WHERE
-seat_id = ? AND version = ?`, using the version number it read when the
-hold was created. If another write already changed that row (however that
-happened), the `WHERE` clause matches zero rows, the update visibly fails,
-and the booking service treats it as a lost race rather than silently
-overwriting someone else's booking. This is "optimistic" locking — assume
-no conflict, verify at commit, retry or reject if wrong — as opposed to
-"pessimistic" locking, which would acquire the row lock upfront and hold
-it for the whole checkout. More on that contrast in Trade-offs.
+<D2Diagram
+  title="Two independent guard layers"
+  type="architecture"
+  chart={`direction: right
+
+request: Booking attempt
+redis: Redis SET NX EX (fast, best-effort) {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+db: DB version check (durable, transactional) {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+booked: Seat booked (both layers agree)
+
+request -> redis: layer 1: instant reject on conflict
+redis -> db: passes if key claimed
+db -> booked: layer 2: commit-time backstop
+`}
+/>
+
+*Layer 1 stops nearly all contention in sub-millisecond time; layer 2 is
+the slower, durable guarantee that holds even if layer 1 is ever wrong.*
+
+**Branch 1 — the fast layer.** The Redis lock, covered above, rejects a
+second `SET` in sub-millisecond time before the request ever reaches the
+database.
+
+**Branch 2 — the durable backstop.** Each seat-inventory row carries a
+`version` integer. When the booking service commits a sale, it doesn't
+just write `status = 'booked'` — it writes `UPDATE seat SET status =
+'booked', version = version + 1 WHERE seat_id = ? AND version = ?`, using
+the version number it read when the hold was created. If another write
+already changed that row (however that happened), the `WHERE` clause
+matches zero rows, the update visibly fails, and the booking service
+treats it as a lost race rather than silently overwriting someone else's
+booking. This is "optimistic" locking — assume no conflict, verify at
+commit, retry or reject if wrong — as opposed to "pessimistic" locking,
+which would acquire the row lock upfront and hold it for the whole
+checkout. More on that contrast in Trade-offs.
 
 {/* concept-dependency: HLD-07 not yet built, explained inline */}
 The booking database itself is a relational store (Postgres) specifically
 *because* this version check needs to be transactional and durable —
 `UPDATE ... WHERE version = ?` is a single atomic statement backed by
 ACID guarantees (the write either fully commits or fully rolls back, and
-once committed it survives a crash). Read replicas and denormalized views
-are useful for the catalog side of this system, covered next, but the
-seat-inventory write path deliberately keeps a single source of truth
-rather than trading consistency for read speed.
+once committed it survives a crash).
 
-Two layers, two different failure modes covered: Redis is the fast,
-low-latency first line of defense that rejects almost all contention
-before it reaches the database; the version check is the slower, durable
-guarantee that holds even if the first layer is ever wrong.
+**Branch 3 — idempotency on retries.** Neither layer alone protects
+against a client or network retrying the *same* request — a mobile app
+that times out waiting for a response and resubmits the hold or payment
+call. Without a guard, that retry looks to the server like a brand-new
+attempt. The fix is an idempotency key: the client generates one UUID per
+logical action (e.g. "hold seat A12") and sends it on every attempt,
+including retries; the booking service stores the key with the result of
+the first successful attempt and, on a repeat, returns that stored result
+instead of re-running the operation.
 
 <QuizItem
   question="The Redis lock already rejects a second buyer instantly. Why bother adding a database version check too?"
@@ -240,35 +365,80 @@ lock logic ever runs. The fix is upstream of locking entirely — a
 **virtual waiting room** that reshapes *when* requests arrive, not just
 what happens once they do.
 
-<DiagramPanel
-  title="Stampede vs. throttled admission"
+<D2Diagram
+  title="Without a waiting room"
   type="architecture"
-  chart={`flowchart TD
-    subgraph WithoutQueue["Without a waiting room"]
-      U1["1,000,000 shoppers,<br/>same second"] -->|100k req/s at peak| INV1["Seat Inventory Service"]
-      INV1 -->|connection pool exhausted| FAIL["Timeouts, cascading overload"]
-    end
+  chart={`direction: right
 
-    subgraph WithQueue["With the virtual waiting room"]
-      U2["1,000,000 shoppers,<br/>same second"] --> WR["Waiting room:<br/>issue token, randomize order"]
-      WR -->|admit ~1,000 users/min| INV2["Seat Inventory Service"]
-      INV2 --> OK["Stays inside its capacity envelope"]
-    end
-  `}
+shoppers: 1,000,000 shoppers, same second {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+inventory: Seat Inventory Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+overload: Timeouts, cascading overload
+
+shoppers -> inventory: 100k req/s at peak
+inventory -> overload: connection pool exhausted
+`}
 />
 
-*Both paths receive the same 1,000,000-shopper spike; the waiting room is
-the only difference between the service falling over and the service
+<D2Diagram
+  title="With the virtual waiting room"
+  type="architecture"
+  chart={`direction: right
+
+shoppers: 1,000,000 shoppers, same second {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+queue: Waiting room: token, randomized order {
+  style.fill: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+inventory: Seat Inventory Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+ok: Stays inside its capacity envelope
+
+shoppers -> queue: same 1,000,000-shopper spike
+queue -> inventory: admit ~1,000 users/min
+inventory -> ok
+`}
+/>
+
+*Both diagrams receive the same 1,000,000-shopper spike; the waiting room
+is the only difference between the service falling over and the service
 staying up.*
 
-Practically, this is how Ticketmaster's real "Smart Queue" works: shoppers
-who arrive before the on-sale time land in a pre-queue and get a
-**randomized** position the moment the sale opens — removing any advantage
-from clicking at exactly the right millisecond — while shoppers who arrive
-after the sale has started join the back of the line, first-in-first-out.
-The waiting room then admits users into the actual buying flow at a rate
-the backend can sustain (on the order of ~1,000 users/minute for a single
-show), rather than letting all of them through at once.
+**Branch 1 — randomized token admission.** This is how Ticketmaster's real
+"Smart Queue" works: shoppers who arrive before the on-sale time land in a
+pre-queue and get a **randomized** position the moment the sale opens —
+removing any advantage from clicking at exactly the right millisecond —
+while shoppers who arrive after the sale has started join the back of the
+line, first-in-first-out. The waiting room then admits users into the
+actual buying flow at a rate the backend can sustain (on the order of
+~1,000 users/minute for a single show), rather than letting all of them
+through at once.
+
+**Branch 2 — rate limiting as a complementary layer.** The waiting room
+throttles *admission into the buying flow*; a token-bucket rate limiter at
+the API gateway, upstream of the queue itself, throttles raw *connection*
+volume so a burst of retries or bot traffic can't overwhelm the gateway
+fleet before a shopper is even assigned a queue position. The two layers
+solve adjacent problems: the rate limiter caps how fast requests are
+accepted at all, the queue controls how fast accepted requests reach
+inventory.
+
+**Branch 3 — per-event sharding.** A single global waiting room would let
+one hot on-sale (say, a stadium tour) starve admission for every other
+concurrent show, since they'd all be competing for the same admission
+budget. Sharding the waiting room's state by event id keeps each show's
+queue and admission rate independent, so a spike on one event doesn't
+throttle buyers on an unrelated one.
 
 This is strictly better than "just add more inventory-service replicas"
 because it addresses the actual mismatch: the problem isn't that the
@@ -291,25 +461,27 @@ being read (event descriptions, venue info, artist pages) barely changes
 minute to minute. That's a classic cache-friendly workload.
 
 {/* concept-dependency: HLD-06 not yet built, explained inline */}
-Event pages sit behind a CDN, so repeat requests for the same event never
-reach the origin at all. Behind that, the Search/Catalog Service uses a
-**cache-aside** pattern against Redis: on a read, check the cache first; on
-a miss, read from the catalog database and populate the cache before
-returning. Writes (a new event added, pricing updated) go to the database
-and explicitly invalidate the corresponding cache key, rather than trying
-to keep the cache continuously in sync. The catalog database itself is
-scaled with read replicas — since browse traffic so heavily outweighs
-writes, most read queries are routed to replicas, leaving the primary free
-for the comparatively rare writes.
 
-One caching hazard worth naming here since it's specific to this system: a
-**cache stampede** — if a hugely popular event's cache entry expires right
-as traffic to it is spiking, every request that misses the cache in that
-instant can hit the database simultaneously. The standard fix is to have
-only one request recompute the value on a miss (a short-lived
-"recomputing" lock) while the rest keep serving the slightly-stale cached
-copy until the refresh completes, rather than letting every concurrent
-miss hit the database at once.
+**Branch 1 — CDN edge caching.** Event pages sit behind a CDN, so repeat
+requests for the same event never reach the origin at all.
+
+**Branch 2 — cache-aside + read replicas.** Behind the CDN, the
+Search/Catalog Service uses a **cache-aside** pattern against Redis: on a
+read, check the cache first; on a miss, read from the catalog database and
+populate the cache before returning. Writes (a new event added, pricing
+updated) go to the database and explicitly invalidate the corresponding
+cache key, rather than trying to keep the cache continuously in sync. The
+catalog database itself is scaled with read replicas — since browse
+traffic so heavily outweighs writes, most read queries are routed to
+replicas, leaving the primary free for the comparatively rare writes.
+
+**Branch 3 — cache stampede mitigation.** A hazard specific to a
+hugely-popular event: if its cache entry expires right as traffic to it is
+spiking, every request that misses the cache in that instant can hit the
+database simultaneously. The standard fix is a single-flight recompute
+lock — only one request recomputes the value on a miss, while the rest
+keep serving the slightly-stale cached copy until the refresh completes,
+rather than letting every concurrent miss hit the database at once.
 
 ### Booking → payment as a saga
 
@@ -319,35 +491,83 @@ and an external payment provider) — there's no single database transaction
 that can wrap all three. That's handled as a **saga**: a sequence of local
 steps, each with a defined compensating action if a later step fails.
 
-<DiagramPanel
-  title="Hold → charge → confirm saga, with timeout rollback"
+**Branch 1 — the happy path.**
+
+<D2Diagram
+  title="Saga: happy path"
   type="sequence"
-  chart={`sequenceDiagram
-    participant U as Buyer
-    participant B as Booking Service
-    participant R as Redis (seat hold)
-    participant P as Payment Service
-    participant D as Booking DB
+  chart={`shape: sequence_diagram
 
-    U->>B: select seat A12
-    B->>R: SET seat:evt_42:A12 NX EX 600
-    R-->>B: OK, hold acquired
-    B-->>U: hold confirmed, 10:00 countdown
+Buyer: Buyer {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+Booking: Booking Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+Redis: Redis (seat hold) {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+Payment: Payment Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+DB: Booking DB {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
 
-    U->>B: submit payment ($145.00)
-    B->>P: charge card
-    alt payment succeeds within TTL
-      P-->>B: charge succeeded
-      B->>D: UPDATE seat SET status=booked, version=version+1 WHERE version=v0
-      D-->>B: 1 row updated
-      B-->>U: booking confirmed
-    else payment fails, or TTL expires first
-      P-->>B: charge failed / timed out
-      B->>R: DEL seat:evt_42:A12 (or let TTL expire)
-      B->>D: UPDATE booking SET status=expired
-      B-->>U: booking failed, seat released
-    end
-  `}
+Buyer -> Booking: select seat A12
+Booking -> Redis: SET seat:evt_42:A12 NX EX 600
+Redis -> Booking: OK, hold acquired
+Booking -> Buyer: hold confirmed, 10:00 countdown
+Buyer -> Booking: submit payment (USD 145.00)
+Booking -> Payment: charge card
+Payment -> Booking: charge succeeded
+Booking -> DB: UPDATE seat SET status=booked, version=version+1 WHERE version=v0
+DB -> Booking: 1 row updated
+Booking -> Buyer: booking confirmed
+`}
+/>
+
+**Branch 2 — the rollback path**, when payment fails or the hold's TTL
+expires first:
+
+<D2Diagram
+  title="Saga: payment failure / TTL rollback"
+  type="sequence"
+  chart={`shape: sequence_diagram
+
+Buyer: Buyer {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+Booking: Booking Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+Redis: Redis (seat hold) {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+Payment: Payment Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+DB: Booking DB {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+
+Buyer -> Booking: submit payment (USD 145.00)
+Booking -> Payment: charge card
+Payment -> Booking: charge failed / timed out
+Booking -> Redis: DEL seat:evt_42:A12 (or let TTL expire)
+Booking -> DB: UPDATE booking SET status=expired
+Booking -> Buyer: booking failed, seat released
+`}
 />
 
 The hold's TTL is what makes the failure path safe even when the
@@ -357,6 +577,18 @@ Redis key, the key still expires on its own 600 seconds after it was set.
 Nothing in this design depends on the compensating action always
 executing — the TTL is the guaranteed fallback, the explicit `DEL` is just
 a faster path to the same outcome.
+
+**Branch 3 — orchestration vs. choreography.** This saga is
+**orchestrated**: the booking service explicitly calls each step in order
+(hold → charge → confirm) and decides what happens next, as opposed to
+**choreography**, where each service reacts independently to events the
+others publish (e.g., a payment service listens for a `seat.held` event
+and publishes `payment.charged` on its own, with no central coordinator).
+Orchestration is the right call for a short, few-step saga owned by one
+team — the whole flow is readable in one place and easy to reason about.
+Choreography pays off when many independently-owned services need to react
+to the same event without a central service becoming a bottleneck or a
+single point of coupling — not the shape of this problem.
 
 <QuizItem
   question="In the saga above, what should the booking service do if the payment call times out but might have actually succeeded on the provider's side?"
@@ -369,12 +601,55 @@ Four mechanisms show up across this design, and it's worth being explicit
 about when each one is the right call rather than treating "use a lock" as
 one undifferentiated choice.
 
-| Mechanism | How it works | Best for | Cost |
-|---|---|---|---|
-| Optimistic locking (DB version column) | Read a version, write with a `WHERE version = ?` check, retry/reject on mismatch | Low-to-medium contention per row; the commit-time backstop in this design | Wasted work on conflict — a rejected write already did the round trip |
-| Pessimistic locking (`SELECT ... FOR UPDATE`) | Acquire the row lock upfront, hold it until the transaction ends | Short transactions with a guaranteed low number of contenders | Holds a DB connection and transaction for the lock's whole duration — disastrous here, since a hold can last up to 10 minutes |
-| Distributed lock (Redis `SET NX`, or ZooKeeper/etcd) | An external, fast, shared lock any service instance can check | High-throughput, low-latency claims across many service instances, before touching the DB at all | Adds a dependency and a network hop to the critical path; correctness depends on getting the TTL and failure handling right |
-| Virtual queue | Throttles *admission*, not per-item access | Protecting overall system capacity from a global demand spike | Doesn't solve the per-seat race at all — it's solving a different problem and is needed *in addition to* a lock, not instead of one |
+<CompareTable
+  title="Locking strategies compared"
+  rows={[
+    {
+      approach: "Optimistic locking (DB version column)",
+      pros: [
+        "Low overhead until a conflict actually happens",
+        "Cheap at the low-to-medium contention this design sees per row once the Redis layer filters most races",
+      ],
+      cons: [
+        "Wasted work on conflict — a rejected write already made the round trip",
+      ],
+      chosenBecause: "Used as the commit-time backstop layered under the Redis lock — cheap when there's no conflict, catches the rare case when the fast layer is wrong",
+    },
+    {
+      approach: "Pessimistic locking (SELECT ... FOR UPDATE)",
+      pros: [
+        "Simple to reason about — the lock is just held until the transaction ends",
+        "Fine for short transactions with a guaranteed low number of contenders",
+      ],
+      cons: [
+        "Holds a DB connection and transaction for the lock's whole duration — disastrous here, since a hold can last up to 10 minutes",
+      ],
+      chosenBecause: "Ruled out for seat-claiming; still the right tool for the version-checked write itself, which holds the lock for microseconds, not minutes",
+    },
+    {
+      approach: "Distributed lock (Redis SET NX, or ZooKeeper/etcd)",
+      pros: [
+        "Fast — sub-millisecond — since Redis executes commands single-threaded per key",
+        "Works across many service instances without touching the DB first",
+      ],
+      cons: [
+        "Adds a network hop and dependency to the critical path",
+        "A naive Redis SET NX can theoretically lose a lock during a failover",
+      ],
+      chosenBecause: "Ticketmaster's real system: fast and simple, with the DB version check absorbing the rare failover edge cases",
+    },
+    {
+      approach: "Virtual queue",
+      pros: [
+        "Protects overall system capacity from a global demand spike",
+        "Solves arrival-rate shaping, a different problem than per-item correctness",
+      ],
+      cons: [
+        "Doesn't solve the per-seat race at all on its own — needed in addition to a lock, not instead of one",
+      ],
+    },
+  ]}
+/>
 
 {/* concept-dependency: HLD-10 not yet built, explained inline */}
 Redis and ZooKeeper both provide distributed locks, but they make
@@ -392,9 +667,7 @@ Pessimistic locking is the one ruled out outright for the seat-claim step:
 holding a database row lock across a buyer's entire payment flow — which
 can run to the full 10-minute TTL — would serialize every contender for
 that seat on a single held DB transaction and connection, which caps
-throughput far below the 10,000 writes/sec target. It's still the right
-choice for the two-line version-check write itself, which is why the "DB
-version check" row above holds the lock for microseconds, not minutes.
+throughput far below the 10,000 writes/sec target.
 
 <QuizItem
   question="Why is pessimistic locking (SELECT ... FOR UPDATE) the wrong tool for claiming a seat, but a fine tool for the version-checked booking write?"
@@ -408,25 +681,37 @@ already been admitted through the waiting room and are looking at a live
 seat map. Alice clicks "select" at t=0ms; Bob clicks the same seat 4ms
 later, before her request has finished.
 
-<DiagramPanel
+<D2Diagram
   title="Two buyers contending for seat A12"
   type="sequence"
-  chart={`sequenceDiagram
-    participant Alice
-    participant Bob
-    participant B as Booking Service
-    participant R as Redis
+  chart={`shape: sequence_diagram
 
-    Alice->>B: POST /seats/A12/hold (t=0ms)
-    Bob->>B: POST /seats/A12/hold (t=4ms)
-    B->>R: SET seat:evt_42:A12 alice NX EX 600
-    R-->>B: OK
-    B->>R: SET seat:evt_42:A12 bob NX EX 600
-    R-->>B: nil (key already exists)
-    B-->>Alice: 200 OK, hold acquired, expires in 10:00
-    B-->>Bob: 409 Conflict, seat no longer available
-    Note over Bob: Bob is shown the seat map again<br/>with A12 now marked held
-  `}
+Alice: Alice {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+Bob: Bob {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+Booking: Booking Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+Redis: Redis {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+
+Alice -> Booking: POST /seats/A12/hold (t=0ms)
+Bob -> Booking: POST /seats/A12/hold (t=4ms)
+Booking -> Redis: SET seat:evt_42:A12 alice NX EX 600
+Redis -> Booking: OK
+Booking -> Redis: SET seat:evt_42:A12 bob NX EX 600
+Redis -> Booking: nil (key already exists)
+Booking -> Alice: 200 OK, hold acquired, expires in 10:00
+Booking -> Bob: 409 Conflict, seat no longer available
+`}
 />
 
 Both requests reach the booking service almost simultaneously, but Redis
@@ -436,9 +721,10 @@ first. Alice's `SET` succeeds because the key doesn't exist yet; Bob's
 `SET`, arriving milliseconds later, fails immediately because the key now
 does. Bob never reaches the payment step, never touches the booking
 database, and gets a clean, immediate rejection rather than a race that
-resolves ambiguously later. If Alice abandons checkout, the Redis key
-expires at 600 seconds and A12 becomes claimable again — by Bob or anyone
-else — with no manual cleanup step required.
+resolves ambiguously later — he's shown the seat map again with A12 now
+marked held. If Alice abandons checkout, the Redis key expires at 600
+seconds and A12 becomes claimable again — by Bob or anyone else — with no
+manual cleanup step required.
 
 ## Interview angle
 
@@ -447,8 +733,10 @@ else — with no manual cleanup step required.
 all-or-nothing guarantee extended across multiple keys — typically a Lua
 script executed atomically inside Redis (or a `MULTI` transaction) that
 checks and sets all N seat keys as one atomic unit, so a group booking
-either holds every seat in the block or none of them, never a partial
-lock that strands the buyer with 3 of the 5 seats they wanted.
+either holds every seat in the block or none of them, never a partial lock
+that strands the buyer with 3 of the 5 seats they wanted. As covered in the
+seat-hold mechanism deep dive, this only works across a Redis Cluster if
+the N seat keys share a hash tag so they land in the same slot.
 
 **"Walk me through cancellation and refunds."** A `CONFIRMED` booking
 moving to `CANCELLED` needs to release its seat back to `AVAILABLE`
@@ -507,6 +795,11 @@ requests happened to arrive in.
 <QuizItem
   question="Outside of a ticket drop, why does the read:write ratio jump from roughly 10:1 to roughly 100:1?"
   answer="During a drop, a large fraction of the concurrent shoppers are actively trying to write (claim a seat), which compresses the ratio. On an ordinary day, writes (real purchases) are rare compared to ongoing browsing traffic, which pushes the ratio back up."
+/>
+
+<QuizItem
+  question="Why does an idempotency key matter for the hold/payment endpoints specifically, given the Redis lock already rejects a second buyer?"
+  answer="The Redis lock rejects a different buyer's competing request, but it doesn't protect against the same buyer's client retrying its own request after a timeout — that retry would otherwise look like a brand-new attempt. An idempotency key lets the server recognize the retry and return the original result instead of double-processing it."
 />
 
 ### Open design challenge
