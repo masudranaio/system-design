@@ -69,3 +69,16 @@ it("globals.css carries the same role colors as the palette module", () => {
     expect(css).toContain(stroke);
   }
 });
+
+it("globals.css keeps the .fill-N7 exception scoping D2 class-diagram header text to white", () => {
+  // Regression guard: the blanket `.diagram-animate text { fill: #0d1b24 }`
+  // dark-text rule (added for Mermaid legibility) also matched D2's
+  // deliberately-white class-diagram header titles (`fill-N7`), making
+  // them unreadable dark-on-dark. Without this scoped exception rule,
+  // a future edit to the blanket rule could silently reintroduce that
+  // regression with nothing to catch it.
+  const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+  expect(css).toContain(".diagram-animate text.fill-N7");
+  const exceptionRule = css.slice(css.indexOf(".diagram-animate text.fill-N7"));
+  expect(exceptionRule).toMatch(/\.diagram-animate text\.fill-N7\s*{[^}]*fill:\s*#ffffff/i);
+});

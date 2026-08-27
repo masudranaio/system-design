@@ -33,6 +33,21 @@ describe("TableOfContents", () => {
     expect(links[1]).toHaveAttribute("href", "#architecture");
   });
 
+  it("gives each link a focus-visible ring matching the app's other nav links, not the browser default", () => {
+    // Regression: TOC links previously relied on the browser's default
+    // blue outline instead of the app's magenta focus-visible ring used
+    // by SidebarNav/TopBar (focus-visible:ring-2 focus-visible:ring-ring).
+    renderArticleWithHeadings();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    render(<TableOfContents containerId="lesson-article" />, { container });
+
+    for (const link of screen.getAllByRole("link")) {
+      expect(link.className).toMatch(/focus-visible:ring-2/);
+      expect(link.className).toMatch(/focus-visible:ring-ring/);
+    }
+  });
+
   it("renders a progress bar starting at zero width", () => {
     renderArticleWithHeadings();
     const container = document.createElement("div");
