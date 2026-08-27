@@ -51,18 +51,26 @@ both are already-merged ancestors of master, safe to clean up whenever
 that process releases them.
 
 **Phase D — Visual verification pass, both themes**
-- [ ] D1. Visual pass: 7 new lessons (Ride-Sharing, Netflix, Food Panda, Event Tracking, Dropbox, Chat/WhatsApp hld's + Event Tracking lld) — not started. **Must also root-cause the 115s page-load flagged below before/during this pass.**
-- [ ] D2. Visual pass: 6 retrofitted lessons (Ticketmaster hld+lld, Parking Lot hld+lld, Amazon Locker hld+lld) — not started; blocked on B5 (Amazon Locker hld) landing first for full coverage, but the other 5 can be checked now.
+- [ ] D1. Visual pass: 7 new lessons (Ride-Sharing, Netflix, Food Panda, Event Tracking, Dropbox, Chat/WhatsApp hld's + Event Tracking lld) — not started.
+- [ ] D2. Visual pass: 6 retrofitted lessons (Ticketmaster hld+lld, Parking Lot hld+lld, Amazon Locker hld+lld) — not started. B5 (Amazon Locker hld retrofit) has landed, so all 6 are now available for this pass.
 
-**UNRESOLVED — flag before Phase D:** spot-checking Amazon Locker's lld
-page live (pre-compaction) returned 200 OK but took 115 seconds to load
-(9 D2 diagrams on that page). Root cause not yet confirmed — leading
-theory is the D2 WASM singleton in `lib/render-d2.ts` re-initializing
-per diagram rather than being reused within/across requests, given each
-lesson now carries 5-9 D2 diagrams. Needs profiling before Phase D scales
-across all 13 new/retrofitted pages — a real user-facing problem, not a
-one-time cold-start cost (unconfirmed either way, a second timed request
-was never completed).
+**RESOLVED (2026-08-27) — the 115s/hanging page-load issue.** Root
+cause confirmed: `lib/render-d2.ts` held a single module-level `D2`
+instance reused across every `renderD2()` call. React renders sibling
+Server Components (each lesson's multiple `<D2Diagram>`s) concurrently,
+so a lesson with N diagrams fired N concurrent `compile()`/`render()`
+calls into that ONE shared WASM instance. Confirmed via a standalone
+benchmark: 9 concurrent calls against a shared instance — only 1 of 9
+ever returned, even after 30s (the underlying WASM isn't reentrant).
+Fix: instantiate a fresh `D2` per `renderD2()` call instead of a
+singleton — verified via the same benchmark, 9 concurrent calls each
+with their own instance resolved in ~2.3s total. Committed `2286ef1`.
+Live-verified post-fix against every newly merged/retrofitted D2-heavy
+page (fresh `pnpm dev`, cold cache): amazon-locker/lld 2.16s,
+amazon-locker/hld (now 10 diagrams) 2.18s, ticketmaster/hld 2.57s,
+ride-sharing/hld 2.61s, dropbox/hld 2.46s, chat-whatsapp/hld 2.21s —
+all well within normal page-load range, none hanging. `pnpm test`
+(17/17 files, 32/32 tests) and this fix are both merged to master.
 
 **Phase E — Tracking & continuation**
 - [x] E1. Update `SYLLABUS.md` + this table with final status — done this pass (2026-08-27): case-studies SYLLABUS.md priority table + progress line, root SYLLABUS.md progress row, this table's Phase B/C checkboxes.
