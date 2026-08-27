@@ -2,6 +2,7 @@ import path from "node:path";
 import { notFound } from "next/navigation";
 import { MDXRemote } from "next-mdx-remote-client/rsc";
 import rehypeSlug from "rehype-slug";
+import remarkGfm from "remark-gfm";
 import { getLesson } from "@/lib/content";
 import { mdxComponents } from "@/lib/mdx-components";
 import { LessonShell } from "@/components/lesson/LessonShell";
@@ -25,7 +26,7 @@ export default async function HldLessonPage({
       <MDXRemote
         source={lesson.source}
         components={mdxComponents}
-        options={{ mdxOptions: { rehypePlugins: [rehypeSlug] } }}
+        options={{ mdxOptions: { remarkPlugins: [remarkGfm], rehypePlugins: [rehypeSlug] } }}
       />
     </LessonShell>
   );
