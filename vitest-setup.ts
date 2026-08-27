@@ -23,8 +23,11 @@ if (typeof globalThis.ResizeObserver === "undefined") {
 }
 
 // jsdom doesn't implement scrollIntoView either, and cmdk calls it when
-// the highlighted item changes.
-if (typeof Element.prototype.scrollIntoView === "undefined") {
+// the highlighted item changes. Guarded because this setup file also runs
+// against plain-Node test files (e.g. lib/diagram-palette.test.ts, which
+// opts into `@vitest-environment node` for filesystem access), where
+// `Element` doesn't exist at all.
+if (typeof Element !== "undefined" && typeof Element.prototype.scrollIntoView === "undefined") {
   Element.prototype.scrollIntoView = function scrollIntoView() {};
 }
 
