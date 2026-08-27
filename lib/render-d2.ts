@@ -1,6 +1,9 @@
 import { D2 } from "@terrastruct/d2";
+import { retintD2Svg, type DiagramRole } from "./diagram-palette";
 
-export type RenderD2Result = { svg: string } | { error: string };
+export type RenderD2Result =
+  | { svg: string; roles: DiagramRole[] }
+  | { error: string };
 
 export async function renderD2(source: string): Promise<RenderD2Result> {
   try {
@@ -14,7 +17,10 @@ export async function renderD2(source: string): Promise<RenderD2Result> {
     // fast in aggregate (9 diagrams, each its own instance, all resolved
     // concurrently in ~2.3s total).
     const d2 = new D2();
-    const compiled = await d2.compile(source, { options: { layout: "dagre" } });
+    // "elk" routes edges on right angles instead of dagre's diagonals,
+    // which is the single biggest readability difference in a dense
+    // architecture diagram (see spec §5.4).
+    const compiled = await d2.compile(source, { options: { layout: "elk" } });
     const svg = await d2.render(compiled.diagram, {
       ...compiled.renderOptions,
       pad: 40,
@@ -27,7 +33,7 @@ export async function renderD2(source: string): Promise<RenderD2Result> {
     // hardcoded white rect that reads as a stray white box in dark mode
     // — matches how Mermaid's SVGs already behave.
     const transparentSvg = svg.replace(/<rect[^>]*class="[^"]*fill-N7[^"]*"[^>]*\/>/, "");
-    return { svg: transparentSvg };
+    return retintD2Svg(transparentSvg);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { error: message };

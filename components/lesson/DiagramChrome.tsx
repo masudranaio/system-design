@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { applyDiagramRoleClasses } from "@/lib/diagram-roles";
 import { usePanZoom, type UsePanZoomResult } from "@/lib/use-pan-zoom";
+import type { DiagramRole } from "@/lib/diagram-palette";
 
 export type DiagramType = "architecture" | "class" | "state" | "sequence" | "er";
 
@@ -107,11 +108,13 @@ export function DiagramChrome({
   title,
   type,
   svgMarkup,
+  roles,
   error,
 }: {
   title: string;
   type: DiagramType;
   svgMarkup: string | null;
+  roles?: DiagramRole[];
   error?: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);

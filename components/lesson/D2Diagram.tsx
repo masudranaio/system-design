@@ -14,6 +14,7 @@ export async function D2Diagram({ title, type, chart }: D2DiagramProps) {
       title={title}
       type={type}
       svgMarkup={"svg" in result ? result.svg : null}
+      roles={"roles" in result ? result.roles : undefined}
       error={"error" in result ? result.error : undefined}
     />
   );
