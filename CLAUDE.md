@@ -7,11 +7,19 @@ locked in
 its Format/Repository-structure sections are superseded by
 [docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md](docs/superpowers/specs/2026-08-26-nextjs-mdx-app-migration-design.md) —
 the app/component architecture, design tokens, and folder structure live
-there. Content quality rules (prose, diagrams, quizzes, self-check
-answers) live in [CONTENT-GUIDE.md](CONTENT-GUIDE.md) — read before
-drafting any lesson's actual content, not just its plan. Lesson-by-lesson
-build list and progress live in [SYLLABUS.md](SYLLABUS.md). Read all four
-before starting work in this repo if they're not already in context.
+there. That doc's design-tokens/typography/diagram-appearance sections
+are in turn superseded by
+[docs/superpowers/specs/2026-08-27-visual-design-system-refresh-design.md](docs/superpowers/specs/2026-08-27-visual-design-system-refresh-design.md)
+(the "Transit" palette — implementation plan at
+[docs/superpowers/plans/2026-08-27-visual-design-system-refresh.md](docs/superpowers/plans/2026-08-27-visual-design-system-refresh.md);
+approved visual reference at
+[docs/superpowers/design-previews/2026-08-27-transit-preview.html](docs/superpowers/design-previews/2026-08-27-transit-preview.html),
+open it directly in a browser). Content quality rules (prose, diagrams,
+quizzes, self-check answers) live in [CONTENT-GUIDE.md](CONTENT-GUIDE.md)
+— read before drafting any lesson's actual content, not just its plan.
+Lesson-by-lesson build list and progress live in
+[SYLLABUS.md](SYLLABUS.md). Read all four before starting work in this
+repo if they're not already in context.
 
 ## Before writing any lesson
 

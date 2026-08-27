@@ -52,6 +52,28 @@ function injectDiagram(container: HTMLDivElement | null, svgMarkup: string | nul
       ? `${intrinsicWidth}px`
       : "100%";
   svg.style.height = "auto";
+
+  // A diagram's drawn content doesn't always start at (0,0) of its own
+  // canvas — e.g. a hub-and-spoke layout where one branch's nodes sit
+  // much further down than another's leaves the top of the canvas
+  // blank. The panel's scroll container defaults to showing (0,0),
+  // which for a diagram like that opens on empty space instead of any
+  // node. Scroll to the SVG's actual content bounding box on load so
+  // the panel opens on something drawn, not the diagram's blank
+  // margin — getBBox() is in the same user-coordinate units as the
+  // viewBox, which is what svg.style.width above maps 1:1 to CSS
+  // pixels, so it can be used directly as a scroll offset.
+  const scrollParent = container.parentElement;
+  if (scrollParent) {
+    try {
+      const bbox = svg.getBBox();
+      scrollParent.scrollLeft = Math.max(0, bbox.x - 16);
+      scrollParent.scrollTop = Math.max(0, bbox.y - 16);
+    } catch {
+      // getBBox can throw if the SVG isn't laid out yet (e.g. a
+      // display:none ancestor) — fall back to the default (0, 0) scroll.
+    }
+  }
 }
 
 function DiagramToolbar({
@@ -140,7 +162,7 @@ export function DiagramChrome({
         <DiagramToolbar panZoom={panZoom} onExpand={() => setFullscreenOpen(true)} />
         <div className="overflow-hidden rounded-md border border-line">
           <div
-            className="origin-top-left cursor-grab overflow-x-auto active:cursor-grabbing"
+            className="origin-top-left max-h-[32rem] cursor-grab overflow-auto active:cursor-grabbing"
             style={{ transform: panZoom.transform }}
             onWheel={panZoom.bind.onWheel}
             onPointerDown={panZoom.bind.onPointerDown}

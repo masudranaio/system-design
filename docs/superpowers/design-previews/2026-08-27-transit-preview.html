@@ -1,0 +1,723 @@
+<title>Transit Design Preview</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=IBM+Plex+Mono:wght@500;600&family=Source+Sans+3:wght@400;600&display=swap">
+<style>
+  /* ─── Page chrome: theme-aware, three-state ─────────────────────── */
+  :root {
+    --pg-bg: #f5f3f5;
+    --pg-card: #ffffff;
+    --pg-ink: #191721;
+    --pg-muted: #605a70;
+    --pg-line: #e2dfe8;
+    --pg-accent: #c01f6b;
+    --pg-accent-soft: #fdeef4;
+    --pg-code-bg: #efecf0;
+  }
+  :root:not([data-theme="light"]) {
+    @media (prefers-color-scheme: dark) {
+      --pg-bg: #17151b;
+      --pg-card: #1f1c25;
+      --pg-ink: #eceaf2;
+      --pg-muted: #a09aad;
+      --pg-line: #302b38;
+      --pg-accent: #ff7fb2;
+      --pg-accent-soft: #2c1a25;
+      --pg-code-bg: #141218;
+    }
+  }
+  :root[data-theme="dark"] {
+    --pg-bg: #17151b;
+    --pg-card: #1f1c25;
+    --pg-ink: #eceaf2;
+    --pg-muted: #a09aad;
+    --pg-line: #302b38;
+    --pg-accent: #ff7fb2;
+    --pg-accent-soft: #2c1a25;
+    --pg-code-bg: #141218;
+  }
+
+  body {
+    background: var(--pg-bg);
+    color: var(--pg-ink);
+    font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+    font-size: 17px;
+    line-height: 1.7;
+    margin: 0;
+    padding: 40px 24px 96px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 56px; }
+  h1, h2, h3, h4 {
+    font-family: Archivo, ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: -0.011em;
+    text-wrap: balance;
+    margin: 0;
+  }
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 12px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--pg-muted);
+  }
+  .lede { color: var(--pg-muted); max-width: 68ch; margin: 0; }
+  section > h2 { font-size: 26px; font-weight: 600; }
+  .rail { height: 3px; width: 48px; border-radius: 99px; background: var(--pg-accent); margin-top: 12px; }
+  .sec-head { display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px; }
+  code {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 14px; font-weight: 500;
+    background: var(--pg-code-bg); border: 1px solid var(--pg-line);
+    border-radius: 4px; padding: 1px 5px;
+  }
+
+  /* ─── Palette swatches ──────────────────────────────────────────── */
+  .swatch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 12px; }
+  .swatch {
+    border: 1px solid var(--pg-line); border-radius: 10px; overflow: hidden;
+    background: var(--pg-card);
+  }
+  .swatch .chip { height: 56px; display: flex; align-items: flex-end; padding: 6px 8px; }
+  .swatch .chip span {
+    font-family: "IBM Plex Mono", monospace; font-size: 11px; font-weight: 600;
+    background: rgb(255 255 255 / 0.9); color: #191721; border-radius: 3px; padding: 1px 4px;
+  }
+  .swatch .meta { padding: 8px 10px 10px; }
+  .swatch .meta b { display: block; font-size: 14px; font-weight: 600; }
+  .swatch .meta small { color: var(--pg-muted); font-size: 13px; }
+  .pair { display: flex; }
+  .pair > div { flex: 1; height: 56px; }
+
+  /* ─── Type specimen ────────────────────────────────────────────── */
+  .specimen { border: 1px solid var(--pg-line); border-radius: 10px; background: var(--pg-card); padding: 24px 28px; }
+  .spec-row { display: flex; align-items: baseline; gap: 20px; padding: 10px 0; border-bottom: 1px dashed var(--pg-line); }
+  .spec-row:last-child { border-bottom: 0; }
+  .spec-row .tag {
+    font-family: "IBM Plex Mono", monospace; font-size: 11px; font-weight: 600;
+    color: var(--pg-muted); min-width: 132px; text-transform: uppercase; letter-spacing: 0.06em;
+  }
+
+  /* ─── Diagram comparison ───────────────────────────────────────── */
+  .compare { display: grid; grid-template-columns: 1fr; gap: 20px; }
+  @media (min-width: 900px) { .compare { grid-template-columns: 1fr 1fr; } }
+  .panel { border: 1px solid var(--pg-line); border-radius: 10px; background: var(--pg-card); padding: 16px; }
+  .panel > .verdict {
+    font-family: "IBM Plex Mono", monospace; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.07em; display: flex; align-items: center; gap: 6px;
+  }
+  .verdict.bad { color: #a63241; }
+  .verdict.good { color: #0c7a5c; }
+  :root[data-theme="dark"] .verdict.bad, :root:not([data-theme="light"]) .verdict.bad { }
+  .panel h4 { font-size: 15px; font-weight: 600; margin-top: 4px; }
+  .canvas { margin-top: 12px; border: 1px solid var(--pg-line); border-radius: 8px; overflow-x: auto; }
+  .canvas.paper { background: #fbfbfc; }
+  .canvas.transparent { background: transparent; }
+  .canvas svg { display: block; min-width: 460px; width: 100%; height: auto; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; padding: 0; list-style: none; }
+  .legend li {
+    display: flex; align-items: center; gap: 6px;
+    font-family: "IBM Plex Mono", monospace; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.05em; color: var(--pg-muted);
+  }
+  .legend i { width: 10px; height: 10px; border-radius: 3px; display: block; }
+  .note { font-size: 15px; color: var(--pg-muted); margin: 10px 0 0; }
+
+  /* ─── App mockups: fully self-contained, independent of viewer theme ── */
+  .mock {
+    --m-ground: #f5f3f5; --m-surface: #ffffff; --m-sidebar: #efecf0;
+    --m-ink: #191721; --m-muted: #605a70; --m-line: #e2dfe8;
+    --m-brand: #c01f6b; --m-brand-soft: #fdeef4;
+    --m-hld: #1c6f96; --m-lld: #4f3fb0; --m-case: #0c7a5c; --m-int: #a76a10;
+    --m-canvas: #fbfbfc;
+    background: var(--m-ground); color: var(--m-ink);
+    border: 1px solid var(--pg-line); border-radius: 12px; overflow: hidden;
+    font-size: 15px;
+  }
+  .mock.dark {
+    --m-ground: #17151b; --m-surface: #1f1c25; --m-sidebar: #141218;
+    --m-ink: #eceaf2; --m-muted: #a09aad; --m-line: #302b38;
+    --m-brand: #ff7fb2; --m-brand-soft: #2c1a25;
+    --m-hld: #62c8f2; --m-lld: #a99cf5; --m-case: #4fd1a5; --m-int: #f9b64e;
+    --m-canvas: #f2f1f4;
+  }
+  .mock-label {
+    font-family: "IBM Plex Mono", monospace; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em; color: var(--pg-muted); margin-bottom: 8px;
+  }
+  .m-top {
+    height: 46px; background: var(--m-surface); border-bottom: 1px solid var(--m-line);
+    display: flex; align-items: center; gap: 10px; padding: 0 16px;
+  }
+  .m-mark {
+    font-family: Archivo, sans-serif; font-weight: 700; font-size: 15px;
+    color: var(--m-brand); display: flex; align-items: center; gap: 7px; letter-spacing: -0.01em;
+  }
+  .m-top nav { margin-left: auto; display: flex; gap: 16px; font-size: 13px; color: var(--m-muted); }
+  .m-body { display: grid; grid-template-columns: 210px 1fr; gap: 16px; padding: 16px; }
+  @media (min-width: 1000px) { .m-body { grid-template-columns: 210px 1fr 168px; } }
+  .m-side { background: var(--m-sidebar); border-radius: 10px; padding: 8px; }
+  .m-side-card { background: var(--m-surface); border: 1px solid var(--m-line); border-radius: 8px; padding: 10px; }
+  .m-sec { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+  .m-sec:first-child { margin-top: 0; }
+  .m-chip { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; flex: none; }
+  .m-chip svg { width: 13px; height: 13px; }
+  .m-sec-title {
+    font-family: "IBM Plex Mono", monospace; font-size: 10.5px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .m-count { margin-left: auto; font-family: "IBM Plex Mono", monospace; font-size: 10.5px; color: var(--m-muted); }
+  .m-links { list-style: none; margin: 6px 0 0; padding: 0 0 0 8px; display: flex; flex-direction: column; gap: 2px; }
+  .m-links.rail-hld { border-left: 2px solid var(--m-hld); }
+  .m-links.rail-lld { border-left: 2px solid var(--m-lld); }
+  .m-links.rail-case { border-left: 2px solid var(--m-case); }
+  .m-links.rail-int { border-left: 2px solid var(--m-int); }
+  .m-links li { font-size: 13px; color: var(--m-muted); padding: 3px 8px; border-radius: 6px; }
+  .m-links li.on { background: var(--m-brand-soft); color: var(--m-brand); font-weight: 600; }
+  .m-group { font-size: 12.5px; font-weight: 600; padding-left: 8px; margin-top: 8px; }
+
+  .m-main { background: var(--m-surface); border: 1px solid var(--m-line); border-radius: 10px; padding: 22px 24px; min-width: 0; }
+  .m-kicker {
+    font-family: "IBM Plex Mono", monospace; font-size: 10.5px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em; color: var(--m-case);
+  }
+  .m-h1 { font-family: Archivo, sans-serif; font-size: 27px; font-weight: 700; line-height: 1.15; margin: 6px 0 0; letter-spacing: -0.011em; }
+  .m-rail { height: 3px; width: 44px; border-radius: 99px; background: var(--m-case); margin-top: 10px; }
+  .m-main h3 { font-family: Archivo, sans-serif; font-size: 19px; font-weight: 600; margin: 24px 0 0; }
+  .m-main p { margin: 12px 0 0; line-height: 1.7; }
+  .m-main a { color: var(--m-brand); text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 2px; font-weight: 600; }
+  .m-main ul { margin: 12px 0 0; padding-left: 20px; }
+  .m-main ul li::marker { color: var(--m-brand); }
+  .m-main li { margin-top: 5px; }
+  .m-panel { border: 1px solid var(--m-line); border-radius: 10px; padding: 12px; margin-top: 18px; }
+  .m-panel .verdict { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--m-hld); }
+  .m-panel h4 { font-family: Archivo, sans-serif; font-size: 14px; font-weight: 600; margin: 3px 0 0; }
+  .m-canvas { margin-top: 10px; border: 1px solid var(--m-line); border-radius: 8px; background: var(--m-canvas); overflow-x: auto; }
+  .m-canvas svg { display: block; min-width: 420px; width: 100%; height: auto; }
+  .m-table-wrap { margin-top: 18px; border: 1px solid var(--m-line); border-radius: 10px; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+  th {
+    background: var(--m-sidebar); text-align: left; padding: 9px 12px;
+    font-family: "IBM Plex Mono", monospace; font-size: 10.5px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.06em; color: var(--m-muted);
+    border-bottom: 1px solid var(--m-line);
+  }
+  td { padding: 9px 12px; border-bottom: 1px solid var(--m-line); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  tbody tr:nth-child(even) { background: color-mix(in srgb, var(--m-ground) 60%, transparent); }
+  .m-toc { display: none; }
+  @media (min-width: 1000px) { .m-toc { display: block; } }
+  .m-toc .eyebrow-s { font-family: "IBM Plex Mono", monospace; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--m-muted); }
+  .m-progress { height: 4px; border-radius: 99px; background: var(--m-line); margin-top: 8px; overflow: hidden; }
+  .m-progress div { height: 100%; width: 38%; border-radius: 99px; background: var(--m-brand); }
+  .m-toc ul { list-style: none; margin: 12px 0 0; padding: 0; border-left: 1px solid var(--m-line); }
+  .m-toc li { font-size: 12.5px; color: var(--m-muted); padding: 3px 0 3px 10px; border-left: 2px solid transparent; margin-left: -1px; }
+  .m-toc li.on { color: var(--m-brand); font-weight: 600; border-left-color: var(--m-brand); }
+
+  /* ─── Change list ──────────────────────────────────────────────── */
+  .changes { border: 1px solid var(--pg-line); border-radius: 10px; background: var(--pg-card); overflow: hidden; }
+  .change { display: grid; grid-template-columns: 1fr; gap: 4px; padding: 16px 20px; border-bottom: 1px solid var(--pg-line); }
+  @media (min-width: 760px) { .change { grid-template-columns: 190px 1fr; gap: 20px; align-items: baseline; } }
+  .change:last-child { border-bottom: 0; }
+  .change b { font-size: 15px; font-weight: 600; }
+  .change p { margin: 0; font-size: 15px; color: var(--pg-muted); }
+  .change p em { font-style: normal; color: var(--pg-ink); font-weight: 600; }
+  footer { color: var(--pg-muted); font-size: 15px; border-top: 1px solid var(--pg-line); padding-top: 20px; }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <p class="eyebrow">Design preview · 2026-08-27</p>
+    <h1 style="font-size:38px;font-weight:700;line-height:1.1;margin-top:8px;">Transit</h1>
+    <div class="rail"></div>
+    <p class="lede" style="margin-top:20px;">
+      What the system-design app looks like after the refresh. Real lesson content from the
+      Amazon Locker HLD, real palette values, both themes. Nothing here is implemented yet —
+      this is the thing to approve or redirect.
+    </p>
+  </header>
+
+  <!-- ══ 1. Diagram: the actual problem ══ -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">The point of the whole refresh</p>
+      <h2>Diagrams, before and after</h2>
+      <p class="lede">
+        Same four nodes, same content. Left is what every one of the 392 nodes in
+        <code>content/</code> renders as today; right is the proposal.
+      </p>
+    </div>
+
+    <div class="compare">
+      <div class="panel">
+        <p class="verdict bad">● Today</p>
+        <h4>Client and service layer</h4>
+        <div class="canvas transparent">
+          <svg viewBox="0 0 520 210" role="img" aria-label="Today's diagram: dark saturated boxes with small white labels and diagonal edges">
+            <g stroke="#8f97a3" stroke-width="1.2" fill="none">
+              <path d="M118 44 L182 78"/><path d="M118 150 L182 96"/>
+              <path d="M282 84 L346 52"/><path d="M282 96 L346 146"/>
+            </g>
+            <g font-family="Source Sans 3, sans-serif" font-size="11" fill="#ffffff" text-anchor="middle">
+              <rect x="14" y="26" width="104" height="36" rx="4" fill="#3b6fd6"/>
+              <text x="66" y="48">Customer App</text>
+              <rect x="14" y="132" width="104" height="36" rx="4" fill="#3b6fd6"/>
+              <text x="66" y="154">Kiosk</text>
+              <rect x="182" y="72" width="100" height="36" rx="4" fill="#5b4fbf"/>
+              <text x="232" y="94">API Gateway</text>
+              <rect x="346" y="26" width="158" height="44" rx="4" fill="#0e7c86"/>
+              <text x="425" y="43">Capacity Reservation</text>
+              <text x="425" y="58">Service</text>
+              <rect x="346" y="128" width="158" height="36" rx="4" fill="#b8722a"/>
+              <text x="425" y="150">Redis (hold TTL)</text>
+            </g>
+          </svg>
+        </div>
+        <p class="note">
+          11px white text on dark saturated fills, diagonal edge routing, transparent canvas
+          that fights the dark theme. Unlabelled colors — nothing says what teal means.
+        </p>
+      </div>
+
+      <div class="panel">
+        <p class="verdict good">● Proposed</p>
+        <h4>Client and service layer</h4>
+        <div class="canvas paper">
+          <svg viewBox="0 0 520 210" role="img" aria-label="Proposed diagram: bright fills with bold dark labels, right-angle edges, and a legend">
+            <g stroke="#5c6470" stroke-width="1.75" fill="none">
+              <path d="M124 44 H154 V90 H178"/>
+              <path d="M124 150 H154 V90"/>
+              <path d="M286 90 H316 V48 H342"/>
+              <path d="M286 90 H316 V146 H342"/>
+            </g>
+            <g font-family="Source Sans 3, sans-serif" font-size="15" font-weight="600" fill="#0d1b24" text-anchor="middle">
+              <rect x="14" y="24" width="110" height="40" rx="7" fill="#62c8f2" stroke="#1c6f96" stroke-width="2"/>
+              <text x="69" y="49">Customer App</text>
+              <rect x="14" y="130" width="110" height="40" rx="7" fill="#62c8f2" stroke="#1c6f96" stroke-width="2"/>
+              <text x="69" y="155">Kiosk</text>
+              <rect x="178" y="70" width="108" height="40" rx="7" fill="#a99cf5" stroke="#4f3fb0" stroke-width="2"/>
+              <text x="232" y="95">API Gateway</text>
+              <rect x="342" y="24" width="164" height="48" rx="7" fill="#4fd1a5" stroke="#0c7a5c" stroke-width="2"/>
+              <text x="424" y="43">Capacity Reservation</text>
+              <text x="424" y="61">Service</text>
+              <rect x="342" y="126" width="164" height="40" rx="7" fill="#f9b64e" stroke="#a76a10" stroke-width="2"/>
+              <text x="424" y="151">Redis (hold TTL)</text>
+            </g>
+            <g font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" fill="#3d4450" text-anchor="middle">
+              <rect x="292" y="100" width="66" height="17" rx="4" fill="#ffffff" stroke="#d6d9e0"/>
+              <text x="325" y="112">500K QPS</text>
+            </g>
+          </svg>
+        </div>
+        <ul class="legend">
+          <li><i style="background:#62c8f2;box-shadow:inset 0 0 0 1.5px #1c6f96;"></i>Client</li>
+          <li><i style="background:#a99cf5;box-shadow:inset 0 0 0 1.5px #4f3fb0;"></i>Network</li>
+          <li><i style="background:#4fd1a5;box-shadow:inset 0 0 0 1.5px #0c7a5c;"></i>Service</li>
+          <li><i style="background:#f9b64e;box-shadow:inset 0 0 0 1.5px #a76a10;"></i>Cache</li>
+        </ul>
+        <p class="note">
+          15px bold near-black on bright fills (every pair clears 7:1), right-angle routing,
+          a canvas that stays paper in both themes, and a legend derived from the diagram's own
+          nodes. <em style="font-style:normal;color:var(--pg-ink);font-weight:600;">No MDX file changes</em> —
+          the six hexes you already author become semantic keys, remapped at render time.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 2. Lesson page, light ══ -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">Lesson page</p>
+      <h2>Light theme</h2>
+      <p class="lede">Off-white ground, white content card, per-track sidebar rails, magenta reserved for “this is interactive”.</p>
+    </div>
+
+    <p class="mock-label">1440px · data-theme="light"</p>
+    <div class="mock">
+      <div class="m-top">
+        <span class="m-mark">
+          <svg viewBox="0 0 16 16" aria-hidden="true" style="width:15px;height:15px;">
+            <rect x="1" y="2" width="2" height="12" rx="1" fill="currentColor"/>
+            <rect x="5" y="3.5" width="2" height="9" rx="1" fill="currentColor"/>
+            <rect x="9" y="5" width="2" height="6" rx="1" fill="currentColor"/>
+            <rect x="13" y="6.5" width="2" height="3" rx="1" fill="currentColor"/>
+          </svg>
+          SYSTEM DESIGN
+        </span>
+        <nav><span>Search</span><span>Syllabus</span><span>Theme</span></nav>
+      </div>
+      <div class="m-body">
+        <aside class="m-side">
+          <div class="m-side-card">
+            <div class="m-sec">
+              <span class="m-chip" style="background:color-mix(in srgb, var(--m-hld) 12%, transparent);">
+                <svg viewBox="0 0 24 24" fill="none" stroke="var(--m-hld)" stroke-width="2"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M12 7.5v4M12 11.5 6 16.5M12 11.5 18 16.5"/></svg>
+              </span>
+              <span class="m-sec-title" style="color:var(--m-hld);">High-Level Design</span>
+              <span class="m-count">9</span>
+            </div>
+            <ul class="m-links rail-hld">
+              <li>Scaling &amp; load balancing</li>
+              <li>Caching strategies</li>
+            </ul>
+
+            <div class="m-sec">
+              <span class="m-chip" style="background:color-mix(in srgb, var(--m-lld) 12%, transparent);">
+                <svg viewBox="0 0 24 24" fill="none" stroke="var(--m-lld)" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M10 10v10"/></svg>
+              </span>
+              <span class="m-sec-title" style="color:var(--m-lld);">Low-Level Design</span>
+              <span class="m-count">7</span>
+            </div>
+            <ul class="m-links rail-lld">
+              <li>Design patterns</li>
+              <li>Database design</li>
+            </ul>
+
+            <div class="m-sec">
+              <span class="m-chip" style="background:color-mix(in srgb, var(--m-case) 12%, transparent);">
+                <svg viewBox="0 0 24 24" fill="none" stroke="var(--m-case)" stroke-width="2"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h3M8 11h3M8 15h3M15 7h1M15 11h1M15 15h1"/></svg>
+              </span>
+              <span class="m-sec-title" style="color:var(--m-case);">Case Studies</span>
+              <span class="m-count">16</span>
+            </div>
+            <p class="m-group">Amazon Locker</p>
+            <ul class="m-links rail-case">
+              <li class="on">HLD</li>
+              <li>LLD</li>
+            </ul>
+            <p class="m-group">Ticketmaster</p>
+            <ul class="m-links rail-case">
+              <li>HLD</li>
+              <li>LLD</li>
+            </ul>
+
+            <div class="m-sec">
+              <span class="m-chip" style="background:color-mix(in srgb, var(--m-int) 12%, transparent);">
+                <svg viewBox="0 0 24 24" fill="none" stroke="var(--m-int)" stroke-width="2"><path d="M4 5h16v11H9l-5 4V5z"/></svg>
+              </span>
+              <span class="m-sec-title" style="color:var(--m-int);">Interview Prep</span>
+              <span class="m-count">4</span>
+            </div>
+            <ul class="m-links rail-int">
+              <li>The 45-minute frame</li>
+            </ul>
+          </div>
+        </aside>
+
+        <main class="m-main">
+          <p class="m-kicker">Case study · High-level design</p>
+          <h2 class="m-h1">Amazon Locker: capacity and reservation</h2>
+          <div class="m-rail"></div>
+
+          <h3>Why reservations are the hot path</h3>
+          <p>
+            A locker network has no elastic capacity: a compartment is either free or it isn't, and
+            two couriers must never be handed the same one. At Amazon's scale that check runs at a
+            peak near <strong>500K QPS</strong> against a dataset that changes every few seconds, so
+            it can't be served from the same store that holds package lifecycle history. This applies
+            <a href="#">caching strategies</a> under a correctness constraint rather than a latency one.
+          </p>
+          <ul>
+            <li><strong>Reserve</strong> takes a short-lived hold, not a booking — an abandoned courier app must not strand a compartment.</li>
+            <li><strong>Availability</strong> is read far more than written, roughly 40:1 at peak.</li>
+            <li>A stale <em>free</em> answer is a failed pickup; a stale <em>busy</em> answer only costs a retry.</li>
+          </ul>
+
+          <div class="m-panel">
+            <p class="verdict">Architecture</p>
+            <h4>Reservation path under peak load</h4>
+            <div class="m-canvas">
+              <svg viewBox="0 0 480 130" role="img" aria-label="Reservation path: gateway to reservation service to Redis and Postgres">
+                <g stroke="#5c6470" stroke-width="1.75" fill="none">
+                  <path d="M104 60 H128 V44 H152"/>
+                  <path d="M262 44 H290 V26 H318"/>
+                  <path d="M262 44 H290 V96 H318"/>
+                </g>
+                <g font-family="Source Sans 3, sans-serif" font-size="15" font-weight="600" fill="#0d1b24" text-anchor="middle">
+                  <rect x="10" y="40" width="94" height="40" rx="7" fill="#a99cf5" stroke="#4f3fb0" stroke-width="2"/>
+                  <text x="57" y="65">Gateway</text>
+                  <rect x="152" y="24" width="110" height="40" rx="7" fill="#4fd1a5" stroke="#0c7a5c" stroke-width="2"/>
+                  <text x="207" y="49">Reservation</text>
+                  <rect x="318" y="6" width="150" height="40" rx="7" fill="#f9b64e" stroke="#a76a10" stroke-width="2"/>
+                  <text x="393" y="31">Redis · hold TTL 90s</text>
+                  <rect x="318" y="76" width="150" height="40" rx="7" fill="#f78a95" stroke="#a63241" stroke-width="2"/>
+                  <text x="393" y="101">Postgres · ledger</text>
+                </g>
+              </svg>
+            </div>
+            <ul class="legend" style="margin-top:8px;">
+              <li><i style="background:#a99cf5;box-shadow:inset 0 0 0 1.5px #4f3fb0;"></i>Network</li>
+              <li><i style="background:#4fd1a5;box-shadow:inset 0 0 0 1.5px #0c7a5c;"></i>Service</li>
+              <li><i style="background:#f9b64e;box-shadow:inset 0 0 0 1.5px #a76a10;"></i>Cache</li>
+              <li><i style="background:#f78a95;box-shadow:inset 0 0 0 1.5px #a63241;"></i>Datastore</li>
+            </ul>
+          </div>
+
+          <h3>Store choice</h3>
+          <div class="m-table-wrap">
+            <table>
+              <thead><tr><th>Option</th><th>P99 read</th><th>Correctness under contention</th><th>Chosen</th></tr></thead>
+              <tbody>
+                <tr><td>Postgres row lock</td><td>18 ms</td><td>Strong; serialises the hot compartment</td><td>No</td></tr>
+                <tr><td>Redis SETNX + TTL</td><td>1.2 ms</td><td>Strong enough; hold self-expires</td><td><strong>Yes</strong></td></tr>
+                <tr><td>DynamoDB conditional</td><td>4.5 ms</td><td>Strong; cost scales with read volume</td><td>No</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p style="font-size:14px;color:var(--m-muted);margin-top:10px;">
+            Markdown tables render like this — today they get no styling at all, because
+            <code style="font-size:12.5px;">lib/mdx-components.tsx</code> never defined a table component.
+          </p>
+        </main>
+
+        <aside class="m-toc">
+          <p class="eyebrow-s">On this page</p>
+          <div class="m-progress"><div></div></div>
+          <ul>
+            <li>Problem framing</li>
+            <li class="on">Why reservations are hot</li>
+            <li>Store choice</li>
+            <li>Failure modes</li>
+            <li>Interview angle</li>
+            <li>Practice &amp; self-check</li>
+          </ul>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 3. Dark ══ -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">Lesson page</p>
+      <h2>Dark theme</h2>
+      <p class="lede">
+        Plum-charcoal ground — deliberately not navy. Track colors switch to their bright variants;
+        the diagram canvas stays paper, which is what lets one diagram palette serve both themes.
+      </p>
+    </div>
+
+    <p class="mock-label">1440px · data-theme="dark"</p>
+    <div class="mock dark">
+      <div class="m-top">
+        <span class="m-mark">
+          <svg viewBox="0 0 16 16" aria-hidden="true" style="width:15px;height:15px;">
+            <rect x="1" y="2" width="2" height="12" rx="1" fill="currentColor"/>
+            <rect x="5" y="3.5" width="2" height="9" rx="1" fill="currentColor"/>
+            <rect x="9" y="5" width="2" height="6" rx="1" fill="currentColor"/>
+            <rect x="13" y="6.5" width="2" height="3" rx="1" fill="currentColor"/>
+          </svg>
+          SYSTEM DESIGN
+        </span>
+        <nav><span>Search</span><span>Syllabus</span><span>Theme</span></nav>
+      </div>
+      <div class="m-body">
+        <aside class="m-side">
+          <div class="m-side-card">
+            <div class="m-sec">
+              <span class="m-chip" style="background:color-mix(in srgb, var(--m-hld) 12%, transparent);">
+                <svg viewBox="0 0 24 24" fill="none" stroke="var(--m-hld)" stroke-width="2"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M12 7.5v4M12 11.5 6 16.5M12 11.5 18 16.5"/></svg>
+              </span>
+              <span class="m-sec-title" style="color:var(--m-hld);">High-Level Design</span>
+              <span class="m-count">9</span>
+            </div>
+            <ul class="m-links rail-hld">
+              <li>Scaling &amp; load balancing</li>
+              <li>Caching strategies</li>
+            </ul>
+            <div class="m-sec">
+              <span class="m-chip" style="background:color-mix(in srgb, var(--m-lld) 12%, transparent);">
+                <svg viewBox="0 0 24 24" fill="none" stroke="var(--m-lld)" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M10 10v10"/></svg>
+              </span>
+              <span class="m-sec-title" style="color:var(--m-lld);">Low-Level Design</span>
+              <span class="m-count">7</span>
+            </div>
+            <ul class="m-links rail-lld">
+              <li>Design patterns</li>
+            </ul>
+            <div class="m-sec">
+              <span class="m-chip" style="background:color-mix(in srgb, var(--m-case) 12%, transparent);">
+                <svg viewBox="0 0 24 24" fill="none" stroke="var(--m-case)" stroke-width="2"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h3M8 11h3M8 15h3M15 7h1M15 11h1M15 15h1"/></svg>
+              </span>
+              <span class="m-sec-title" style="color:var(--m-case);">Case Studies</span>
+              <span class="m-count">16</span>
+            </div>
+            <p class="m-group">Amazon Locker</p>
+            <ul class="m-links rail-case">
+              <li class="on">HLD</li>
+              <li>LLD</li>
+            </ul>
+            <div class="m-sec">
+              <span class="m-chip" style="background:color-mix(in srgb, var(--m-int) 12%, transparent);">
+                <svg viewBox="0 0 24 24" fill="none" stroke="var(--m-int)" stroke-width="2"><path d="M4 5h16v11H9l-5 4V5z"/></svg>
+              </span>
+              <span class="m-sec-title" style="color:var(--m-int);">Interview Prep</span>
+              <span class="m-count">4</span>
+            </div>
+            <ul class="m-links rail-int">
+              <li>The 45-minute frame</li>
+            </ul>
+          </div>
+        </aside>
+
+        <main class="m-main">
+          <p class="m-kicker">Case study · High-level design</p>
+          <h2 class="m-h1">Amazon Locker: capacity and reservation</h2>
+          <div class="m-rail"></div>
+          <h3>Why reservations are the hot path</h3>
+          <p>
+            A locker network has no elastic capacity: a compartment is either free or it isn't. At peak
+            near <strong>500K QPS</strong> the availability check can't be served from the same store
+            that holds package history — see <a href="#">caching strategies</a>.
+          </p>
+          <div class="m-panel">
+            <p class="verdict">Architecture</p>
+            <h4>Reservation path under peak load</h4>
+            <div class="m-canvas">
+              <svg viewBox="0 0 480 130" role="img" aria-label="Same diagram in dark theme, still on a light canvas">
+                <g stroke="#5c6470" stroke-width="1.75" fill="none">
+                  <path d="M104 60 H128 V44 H152"/>
+                  <path d="M262 44 H290 V26 H318"/>
+                  <path d="M262 44 H290 V96 H318"/>
+                </g>
+                <g font-family="Source Sans 3, sans-serif" font-size="15" font-weight="600" fill="#0d1b24" text-anchor="middle">
+                  <rect x="10" y="40" width="94" height="40" rx="7" fill="#a99cf5" stroke="#4f3fb0" stroke-width="2"/>
+                  <text x="57" y="65">Gateway</text>
+                  <rect x="152" y="24" width="110" height="40" rx="7" fill="#4fd1a5" stroke="#0c7a5c" stroke-width="2"/>
+                  <text x="207" y="49">Reservation</text>
+                  <rect x="318" y="6" width="150" height="40" rx="7" fill="#f9b64e" stroke="#a76a10" stroke-width="2"/>
+                  <text x="393" y="31">Redis · hold TTL 90s</text>
+                  <rect x="318" y="76" width="150" height="40" rx="7" fill="#f78a95" stroke="#a63241" stroke-width="2"/>
+                  <text x="393" y="101">Postgres · ledger</text>
+                </g>
+              </svg>
+            </div>
+          </div>
+          <div class="m-table-wrap">
+            <table>
+              <thead><tr><th>Option</th><th>P99 read</th><th>Chosen</th></tr></thead>
+              <tbody>
+                <tr><td>Postgres row lock</td><td>18 ms</td><td>No</td></tr>
+                <tr><td>Redis SETNX + TTL</td><td>1.2 ms</td><td><strong>Yes</strong></td></tr>
+                <tr><td>DynamoDB conditional</td><td>4.5 ms</td><td>No</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </main>
+
+        <aside class="m-toc">
+          <p class="eyebrow-s">On this page</p>
+          <div class="m-progress"><div></div></div>
+          <ul>
+            <li>Problem framing</li>
+            <li class="on">Why reservations are hot</li>
+            <li>Store choice</li>
+            <li>Failure modes</li>
+          </ul>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 4. Palette ══ -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">Tokens</p>
+      <h2>Palette</h2>
+      <p class="lede">
+        Split swatches show light / dark. Magenta is the only hue no track and no diagram role uses,
+        so “interactive” is never confused with “which section am I in”.
+      </p>
+    </div>
+
+    <h3 style="font-size:19px;font-weight:600;margin-bottom:12px;">Identity &amp; ground</h3>
+    <div class="swatch-grid">
+      <div class="swatch">
+        <div class="pair"><div style="background:#c01f6b"></div><div style="background:#ff7fb2"></div></div>
+        <div class="meta"><b>Accent</b><small>#c01f6b / #ff7fb2</small></div>
+      </div>
+      <div class="swatch">
+        <div class="pair"><div style="background:#f5f3f5"></div><div style="background:#17151b"></div></div>
+        <div class="meta"><b>Ground</b><small>#f5f3f5 / #17151b</small></div>
+      </div>
+      <div class="swatch">
+        <div class="pair"><div style="background:#ffffff"></div><div style="background:#1f1c25"></div></div>
+        <div class="meta"><b>Surface</b><small>#ffffff / #1f1c25</small></div>
+      </div>
+      <div class="swatch">
+        <div class="pair"><div style="background:#191721"></div><div style="background:#eceaf2"></div></div>
+        <div class="meta"><b>Ink</b><small>#191721 / #eceaf2</small></div>
+      </div>
+    </div>
+
+    <h3 style="font-size:19px;font-weight:600;margin:28px 0 12px;">Track lines</h3>
+    <div class="swatch-grid">
+      <div class="swatch">
+        <div class="pair"><div style="background:#1c6f96"></div><div style="background:#62c8f2"></div></div>
+        <div class="meta"><b>High-Level Design</b><small>#1c6f96 / #62c8f2</small></div>
+      </div>
+      <div class="swatch">
+        <div class="pair"><div style="background:#4f3fb0"></div><div style="background:#a99cf5"></div></div>
+        <div class="meta"><b>Low-Level Design</b><small>#4f3fb0 / #a99cf5</small></div>
+      </div>
+      <div class="swatch">
+        <div class="pair"><div style="background:#0c7a5c"></div><div style="background:#4fd1a5"></div></div>
+        <div class="meta"><b>Case Studies</b><small>#0c7a5c / #4fd1a5</small></div>
+      </div>
+      <div class="swatch">
+        <div class="pair"><div style="background:#a76a10"></div><div style="background:#f9b64e"></div></div>
+        <div class="meta"><b>Interview Prep</b><small>#a76a10 / #f9b64e</small></div>
+      </div>
+    </div>
+
+    <h3 style="font-size:19px;font-weight:600;margin:28px 0 12px;">Diagram roles — one palette, both themes</h3>
+    <div class="swatch-grid">
+      <div class="swatch"><div class="chip" style="background:#62c8f2"><span>#62c8f2</span></div><div class="meta"><b>Client</b><small>stroke #1c6f96</small></div></div>
+      <div class="swatch"><div class="chip" style="background:#a99cf5"><span>#a99cf5</span></div><div class="meta"><b>Network</b><small>stroke #4f3fb0</small></div></div>
+      <div class="swatch"><div class="chip" style="background:#4fd1a5"><span>#4fd1a5</span></div><div class="meta"><b>Service</b><small>stroke #0c7a5c</small></div></div>
+      <div class="swatch"><div class="chip" style="background:#f9b64e"><span>#f9b64e</span></div><div class="meta"><b>Cache</b><small>stroke #a76a10</small></div></div>
+      <div class="swatch"><div class="chip" style="background:#f78a95"><span>#f78a95</span></div><div class="meta"><b>Datastore</b><small>stroke #a63241</small></div></div>
+      <div class="swatch"><div class="chip" style="background:#b9c0cc"><span>#b9c0cc</span></div><div class="meta"><b>Queue</b><small>stroke #5a6472</small></div></div>
+    </div>
+  </section>
+
+  <!-- ══ 5. Type ══ -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">Type</p>
+      <h2>Archivo · Source Sans 3 · IBM Plex Mono</h2>
+      <p class="lede">Body moves from serif to sans — a serif at 17px is the wrong tool for prose dense with identifiers, hex values and inline code. The character moves to the heading face instead.</p>
+    </div>
+    <div class="specimen">
+      <div class="spec-row"><span class="tag">H1 · 34/1.15 · 700</span><span style="font-family:Archivo;font-size:34px;font-weight:700;line-height:1.15;letter-spacing:-0.011em;">Capacity and reservation</span></div>
+      <div class="spec-row"><span class="tag">H2 · 26/1.25 · 600</span><span style="font-family:Archivo;font-size:26px;font-weight:600;letter-spacing:-0.011em;">Why reservations are hot</span></div>
+      <div class="spec-row"><span class="tag">H3 · 20/1.35 · 600</span><span style="font-family:Archivo;font-size:20px;font-weight:600;">Store choice</span></div>
+      <div class="spec-row"><span class="tag">Body · 17/1.75</span><span style="font-size:17px;">A locker network has no elastic capacity: a compartment is either free or it isn't.</span></div>
+      <div class="spec-row"><span class="tag">Eyebrow · 12 · mono</span><span class="eyebrow">Case study · high-level design</span></div>
+      <div class="spec-row"><span class="tag">Code · 15 · mono</span><span><code>style.fill: "#0e7c86"</code></span></div>
+      <div class="spec-row"><span class="tag">Diagram label · 15 · 600</span><span style="font-size:15px;font-weight:600;background:#4fd1a5;color:#0d1b24;padding:4px 10px;border:2px solid #0c7a5c;border-radius:7px;">Reservation Service</span></div>
+    </div>
+  </section>
+
+  <!-- ══ 6. Change list ══ -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">Scope</p>
+      <h2>What actually changes</h2>
+    </div>
+    <div class="changes">
+      <div class="change"><b>Diagram appearance</b><p>Bright fills, bold 15px near-black labels, 2px strokes, right-angle routing (<code>dagre</code> → <code>elk</code>), always-paper canvas, auto legend, fit-to-width, panel 32rem → 40rem.</p></div>
+      <div class="change"><b>Diagram plumbing</b><p>One tested pure function retints D2's SVG at render time. Your six authored hexes become semantic keys — <em>zero edits across 392 nodes in 16 MDX files</em>, and ~100 lines of dark-mode <code>!important</code> overrides get deleted.</p></div>
+      <div class="change"><b>Color system</b><p>One accent becomes: magenta identity + four track lines + three semantic states. Track color appears in the sidebar, homepage cards and lesson kicker, so color tells you where you are.</p></div>
+      <div class="change"><b>Typography</b><p>Serif body → Source Sans 3 at 17/1.75; headings → Archivo; measure 100ch → 90ch. Also fixes an existing bug where <code>.font-mono</code> shared a selector with <code>h1–h6</code>, so every eyebrow was being styled by the heading rule.</p></div>
+      <div class="change"><b>Tables</b><p>Header band, zebra rows, tabular numerals, own scroll container. Five MDX files have raw tables that currently render <em>completely unstyled</em>.</p></div>
+      <div class="change"><b>Chrome</b><p>Radius 4px → 10px, content on a white card, sidebar cards with icon chips + lesson counts, TOC reading-progress bar, magenta focus rings everywhere.</p></div>
+      <div class="change"><b>Not in scope</b><p>Callout/admonition component, code syntax highlighting, progress persistence, search. Recorded in the spec so they don't get absorbed silently.</p></div>
+    </div>
+  </section>
+
+  <footer>
+    Approve this and I'll run the 9-task plan — palette module → render path → tokens → type → diagram
+    chrome → nav → homepage → docs → cross-route verification, each task TDD'd and checked in both
+    themes with Playwright. Or name what to change: the magenta is the boldest call here and the
+    easiest to swap.
+  </footer>
+
+</div>
