@@ -35,6 +35,11 @@
     "excerpt": "Netflix's hard problem isn't storing movies — it's that \"press play\" has\nto turn into a stream of bytes arriving faster than the screen consumes\nthem, for hundreds of millions of people at once, on e"
   },
   {
+    "title": "Notification Service — Low-Level Design",
+    "href": "/case-studies/notification-service/lld",
+    "excerpt": "Problem framing\n\nThree call sites, three different services, one shared need:\n\n- Ticketmaster's booking service confirms a purchase and needs the\n  buyer to get an email receipt and a push notificat"
+  },
+  {
     "title": "Parking Lot — High-Level Design",
     "href": "/case-studies/parking-lot/hld",
     "excerpt": "This lesson picks up where the\n[Parking Lot LLD](/case-studies/parking-lot/lld) left off. That lesson\nmodeled a single facility: one ParkingLot, its Levels, Spots, and\nthe Gates that atomically flip"
