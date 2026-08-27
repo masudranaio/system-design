@@ -23,30 +23,51 @@ genuinely broken. Spec/plan:
 **Phase A complete.** All 6 D2-engine/layout-shell tasks done.
 
 **Phase B — Retrofit the 3 existing case studies (D2 diagrams, new content standard)**
-- [ ] B1. Ticketmaster `hld.mdx` — dispatched
-- [ ] B2. Ticketmaster `lld.mdx` — dispatched
-- [ ] B3. Parking Lot `hld.mdx` — dispatched
-- [ ] B4. Parking Lot `lld.mdx` — dispatched
-- [ ] B5. Amazon Locker `hld.mdx` — dispatched
-- [ ] B6. Amazon Locker `lld.mdx` — dispatched
+- [x] B1. Ticketmaster `hld.mdx` — **done**, drafted in worktree agent (killed mid-session by account spend limit, but had already finished + left the tree clean), committed `3edb110`, merged `da89a9f`.
+- [x] B2. Ticketmaster `lld.mdx` — **done**, committed `8e2260a`, merged `92c4748`.
+- [x] B3. Parking Lot `hld.mdx` — **done**, merged earlier this session, `c28ca8d` (see above, pre-compaction).
+- [x] B4. Parking Lot `lld.mdx` — **done**, committed `514b241`, merged `28954ac`.
+- [ ] B5. Amazon Locker `hld.mdx` — **not started**. Its worktree agent was killed by the spend limit before writing anything (only touched CHECKLIST.md). Needs full redispatch.
+- [x] B6. Amazon Locker `lld.mdx` — **done**, merged earlier this session, `8338813` (see above, pre-compaction).
 
 **Phase C — 7 new case studies (checklist + full lesson each)**
-- [ ] C1. Ride-Sharing (CS-09) `hld.mdx` — dispatched
-- [ ] C2. Netflix (CS-10) `hld.mdx` — dispatched
-- [ ] C3. Food Panda (CS-11) `hld.mdx` — dispatched
-- [ ] C4. Event Tracking System (CS-12) `lld.mdx` — dispatched
-- [ ] C5. Notification Service (CS-13) `lld.mdx` — dispatched
-- [ ] C6. Dropbox (new CS-14) `hld.mdx` — dispatched
-- [ ] C7. Chat/WhatsApp (new CS-15) `hld.mdx` — dispatched
+- [x] C1. Ride-Sharing (CS-09) `hld.mdx` — **done**, committed `c10e5e6`, merged `aa0f016`.
+- [x] C2. Netflix (CS-10) `hld.mdx` — **done**, committed `008fd87`, merged `307529d`.
+- [x] C3. Food Panda (CS-11) `hld.mdx` — **done**, merged earlier this session, `24c495c` (see above, pre-compaction).
+- [x] C4. Event Tracking System (CS-12) `lld.mdx` — **done**, committed `90fb1b3`, merged `fa77273` (resolved an add/add CHECKLIST.md conflict — kept the worktree's completed/checked-off version).
+- [ ] C5. Notification Service (CS-13) `lld.mdx` — **not started**. Its worktree agent was killed by the spend limit before writing anything (clean worktree). Needs full redispatch.
+- [x] C6. Dropbox (new CS-14) `hld.mdx` — **done**, committed `bae1d12`, merged `d678819`.
+- [x] C7. Chat/WhatsApp (new CS-15) `hld.mdx` — **done**. This agent actually finished AND committed (`6e5c407`) before the spend limit hit the batch — merged `1713318` (resolved an add/add CHECKLIST.md conflict, same pattern as C4).
+
+**Post-merge verification (2026-08-27):** all 8 branches above merged
+clean to master (2 trivial CHECKLIST.md add/add conflicts, both
+resolved by keeping the completed-checklist side). `pnpm test`: 17/17
+files, 32/32 tests pass. `pnpm build`: clean exit 0 (only the
+pre-existing dynamic-fs-tracing advisories in `lib/content.ts`, not
+errors). 12 now-merged worktrees + their branches deleted. Two worktrees
+(`agent-a7f4766fe45020d5c`, `agent-ad6443fb1a0b51bd1`) were locked by a
+live process (pid 238976) and left alone rather than force-removed —
+both are already-merged ancestors of master, safe to clean up whenever
+that process releases them.
 
 **Phase D — Visual verification pass, both themes**
-- [ ] D1. Visual pass: 7 new lessons
-- [ ] D2. Visual pass: 6 retrofitted lessons
+- [ ] D1. Visual pass: 7 new lessons (Ride-Sharing, Netflix, Food Panda, Event Tracking, Dropbox, Chat/WhatsApp hld's + Event Tracking lld) — not started. **Must also root-cause the 115s page-load flagged below before/during this pass.**
+- [ ] D2. Visual pass: 6 retrofitted lessons (Ticketmaster hld+lld, Parking Lot hld+lld, Amazon Locker hld+lld) — not started; blocked on B5 (Amazon Locker hld) landing first for full coverage, but the other 5 can be checked now.
+
+**UNRESOLVED — flag before Phase D:** spot-checking Amazon Locker's lld
+page live (pre-compaction) returned 200 OK but took 115 seconds to load
+(9 D2 diagrams on that page). Root cause not yet confirmed — leading
+theory is the D2 WASM singleton in `lib/render-d2.ts` re-initializing
+per diagram rather than being reused within/across requests, given each
+lesson now carries 5-9 D2 diagrams. Needs profiling before Phase D scales
+across all 13 new/retrofitted pages — a real user-facing problem, not a
+one-time cold-start cost (unconfirmed either way, a second timed request
+was never completed).
 
 **Phase E — Tracking & continuation**
-- [ ] E1. Update `SYLLABUS.md` + this table with final status
-- [x] E2. Create the `CronCreate` recurring wake-up job — done, job `d3e08e19`, every 22 min, expires after 7 days (session-only — will need recreating if the session restarts)
-- [ ] E3. Once all 24 done, propose + start next batch from the Extended list
+- [x] E1. Update `SYLLABUS.md` + this table with final status — done this pass (2026-08-27): case-studies SYLLABUS.md priority table + progress line, root SYLLABUS.md progress row, this table's Phase B/C checkboxes.
+- [x] E2. Create the `CronCreate` recurring wake-up job — **cancelled 2026-08-27** per explicit user instruction ("now no need that croncreate job, you first delete the croncreate"). Job `d3e08e19` deleted. No replacement scheduled — this session continues under direct user turns instead.
+- [ ] E3. Once all 24 done, propose + start next batch from the Extended list — blocked on B5 + C5 (the only 2 remaining of the 24), plus Phase D's visual pass and the 115s perf investigation.
 
 ---
 
