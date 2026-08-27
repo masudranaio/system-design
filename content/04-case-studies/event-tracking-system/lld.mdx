@@ -1,0 +1,969 @@
+---
+title: "Event Tracking System: Low-Level Design"
+module: "04-case-studies/event-tracking-system"
+---
+
+## Problem framing
+
+Every product with a `analytics.track("checkout_completed", properties)` call
+somewhere in its codebase has this system behind it: a client SDK that
+captures the event, a server that accepts and validates it, and a
+processor that turns it into a durable, query-ready record. This is a
+distinct LLD framing from log-aggregation-for-ops systems (ELK-style
+stacks ingesting server logs for debugging) — the audience here is
+product/growth teams asking "how many users completed checkout today,"
+not an on-call engineer grepping stack traces. The object model has to
+answer a narrower, sharper question than "store some logs": how does an
+event survive a flaky network, a crashed app, and a retried request
+without either getting lost or getting counted twice?
+
+A candidate who jumps straight to "Kafka + a stream processor" is
+answering the wrong-scoped question. The interviewer expects clarifying
+questions first:
+
+- What triggers an event — a client-side user action (button tap), a
+  server-side action (order placed), or both?
+- What delivery guarantee is required — is losing 0.1% of events during
+  an outage acceptable, or must every accepted event be durable?
+- Does event *order* matter — does "add to cart" need to be provably
+  before "checkout," or is each event just a timestamped fact?
+- Who consumes the data downstream, and does this lesson need to design
+  that consumer (a BI dashboard) or just hand it a query-ready table?
+
+This lesson answers those the way most interviews settle them: events
+come from both client and server call sites through the same SDK
+shape, the guarantee is at-least-once (never silently drop an accepted
+event) made effectively-once via dedup, ordering is best-effort
+per-client only, and the query/dashboard layer is explicitly out of
+scope — this lesson stops at "durable, query-ready storage." The
+boundary is a **single ingestion pipeline's object model** — one SDK,
+one ingestion service, one processor. Coordinating *many* ingestion
+regions and massive cross-datacenter fan-out is a different bottleneck,
+deferred to a future HLD companion lesson the same way Ticketmaster's
+LLD deferred network-scale concerns to its HLD side.
+
+<QuizItem
+  question="Why does this lesson frame the problem as 'design analytics.track()' rather than 'design a logging system'?"
+  answer="They're different consumers and different guarantees. A logging system optimizes for ops debugging (grep-ability, short retention, tolerant of gaps) while an analytics pipeline optimizes for counting events correctly (a lost or double-counted checkout event corrupts a business metric) — that difference is what drives the dedup and delivery-guarantee design in this lesson, and it wouldn't be necessary for a pure debug log."
+/>
+
+## Requirements at the object level
+
+Translate the functional requirements into nouns, then decide which
+nouns need their own behavior (a class) and which are just data another
+noun carries.
+
+**Nouns that become classes:** `Event`, `EventBatch`, `AnalyticsClient`
+(the SDK's public entry point), `EventBuffer`, `Transport`,
+`RetryPolicy`, `IngestionController`, `Validator`, `Deduplicator`,
+`EventProcessor`.
+
+**Nouns that don't:** an event's `properties` payload is not one class
+per event type (`CheckoutCompletedEvent`, `ProductViewedEvent`, ...) —
+it's a schemaless, typed key-value map on a single generic `Event`
+class. Modeling one class per event name doesn't scale (a growing
+product adds new event names weekly) and would force the SDK to ship a
+new class every time a PM adds a new `track()` call. `properties` stays
+a `Map<string, any>`, validated against a named schema at the server,
+not encoded in the client's type system.
+
+**Cardinalities:**
+
+- One `AnalyticsClient` → many `Event`s created over its lifetime
+- Many `Event`s → batched into one `EventBatch` at flush time
+- One `EventBatch` → exactly one `Transport.send()` call (never one
+  HTTP request per event — that's the whole point of batching, covered
+  in the deep dive below)
+
+**What identifies an event uniquely, and why it's decided at creation
+time:** each `Event` gets a client-generated UUID the instant
+`track()` is called, not a server-assigned ID on arrival. This single
+decision is what makes deduplication possible at all — if the ID were
+assigned by the server, a retried request (the original response was
+lost, not the request) would look like a brand-new event with no way
+to recognize it as a repeat of the first attempt.
+
+<QuizItem
+  question="Why is the event's properties payload modeled as a generic Map rather than one class per event type (e.g. a CheckoutCompletedEvent class)?"
+  answer="A real product adds new event names continuously, and one-class-per-event-type would require an SDK release every time a PM defines a new tracked action. A single Event class with a typed properties map keeps the SDK stable while the set of event names and shapes evolves — schema validation for a given event name happens server-side against a named schema, not in the client's type system."
+/>
+
+## Class design
+
+Ten classes split cleanly into two halves: the SDK (runs inside the
+host app, owns buffering/batching/retry) and the ingestion server (runs
+as a backend service, owns validation/dedup/persistence). `Event` and
+`EventBatch` are the only classes that cross the boundary between them.
+
+<D2Diagram
+  title="Event tracking domain — class diagram"
+  type="class"
+  chart={`direction: right
+
+Event: {
+  shape: class
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+  id: UUID
+  name: string
+  timestamp: DateTime
+  userId: string
+  anonymousId: string
+  properties: Map
+  context: Map
+}
+
+EventBuilder: {
+  shape: class
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+  withName(name string): EventBuilder
+  withProperty(key string, value any): EventBuilder
+  withUser(userId string): EventBuilder
+  build(): Event
+}
+
+EventBatch: {
+  shape: class
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+  batchId: UUID
+  events: "Event[]"
+}
+
+AnalyticsClient: {
+  shape: class
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+  track(name string, properties Map): void
+  identify(userId string): void
+  flush(): void
+}
+
+EventBuffer: {
+  shape: class
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+  capacity: int
+  add(event Event): void
+  drain(batchSize int): EventBatch
+}
+
+Transport: {
+  shape: class
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+  send(batch EventBatch): DeliveryResult
+}
+
+HttpTransport: {
+  shape: class
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+  endpoint: string
+  send(batch EventBatch): DeliveryResult
+}
+
+RetryPolicy: {
+  shape: class
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+  maxAttempts: int
+  nextDelay(attempt int): Duration
+}
+
+IngestionController: {
+  shape: class
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+  receive(batch EventBatch): IngestionResult
+}
+
+Validator: {
+  shape: class
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+  validate(event Event): ValidationResult
+}
+
+Deduplicator: {
+  shape: class
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+  isDuplicate(eventId UUID): bool
+  markSeen(eventId UUID): void
+}
+
+EventProcessor: {
+  shape: class
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+  enrich(event Event): Event
+  persist(event Event): void
+}
+
+EventBuilder -> Event: builds (Builder pattern)
+AnalyticsClient -> EventBuffer: owns (composition)
+EventBuffer -> EventBatch: drains into
+AnalyticsClient -> Transport: sends via (injected, Strategy)
+HttpTransport -> Transport: implements
+Transport -> RetryPolicy: consults on failure
+Transport -> IngestionController: POST batch (network boundary)
+IngestionController -> Validator: stage 1 (Chain of Responsibility)
+IngestionController -> Deduplicator: stage 2
+IngestionController -> EventProcessor: stage 3
+`}
+/>
+
+The blue classes run inside the host app (mobile app, web page, backend
+service that calls `track()`); the teal classes run on the ingestion
+server. `Transport` is drawn in the buffer/cache color deliberately —
+it's the seam where the SDK's in-process world ends and a network call
+begins, the same role a cache or queue plays as a boundary object
+elsewhere in this course. `AnalyticsClient.track()` builds an `Event`
+via `EventBuilder`, hands it to `EventBuffer.add()`, and returns
+immediately — the caller never blocks on network I/O, which is the
+non-functional requirement that a slow ingestion endpoint must not
+freeze the host app's UI thread.
+
+<QuizItem
+  question="Why does Transport sit between AnalyticsClient and IngestionController as its own class, rather than AnalyticsClient calling the ingestion HTTP endpoint directly?"
+  answer="Transport is an interface (Strategy pattern) so the delivery mechanism — HTTP today, potentially a local socket or a message-queue client later — is swappable without touching AnalyticsClient, EventBuffer, or any code that calls track(). Hardcoding an HTTP call inside AnalyticsClient would mean every alternate transport needs a fork of the whole client, not a new class."
+/>
+
+## Sequence diagram — client batch-send-ack flow
+
+The full lifecycle of one call to `track()`: it's buffered, not sent;
+a threshold trigger drains the buffer into a batch; the batch is sent
+and, critically, **only removed from the local queue after a positive
+server acknowledgment** — never on send, only on ack.
+
+<D2Diagram
+  title="track() call through buffered batch send and ack"
+  type="sequence"
+  chart={`shape: sequence_diagram
+app: Host App
+sdk: AnalyticsClient
+buf: EventBuffer
+tx: HttpTransport
+srv: IngestionController
+
+app -> sdk: "track('checkout_completed', properties)"
+sdk -> buf: "add(event)"
+buf -> buf: "size >= 20 OR 10s elapsed since last flush"
+buf -> tx: "drain(20) -> send(batch)"
+tx -> srv: "POST /v1/events, batch of 20 events"
+srv -> srv: "validate + dedup + enrich + persist each event"
+srv -> tx: "200 OK, accepted: 20, rejected: 0"
+tx -> buf: "ack(eventIds), remove acked events from local queue"
+tx -> tx: "network timeout, no response received"
+tx -> tx: "RetryPolicy.nextDelay(attempt=1), wait"
+tx -> srv: "POST /v1/events, retry with unchanged batch"
+`}
+/>
+
+The ack-then-drop ordering is the entire reason this design achieves
+at-least-once delivery rather than silent loss: the SDK's local queue
+is the durability boundary until the server confirms receipt. Drop
+events on *send* instead of *ack*, and any batch lost between the SDK
+and the server (a killed network connection mid-request, a crashed
+process before the response arrives) disappears with no way to detect
+or recover it. The final two lines show why retries are safe to resend
+unchanged — the same batch, same event IDs — without first checking
+whether the first attempt actually landed: that safety is the
+deduplication mechanism covered next, not something `Transport` itself
+has to reason about.
+
+<QuizItem
+  question="If the SDK removed an event from its local queue immediately after calling Transport.send(), instead of waiting for a 200 ack, what failure mode does that reintroduce?"
+  answer="Silent event loss on any failure between the request leaving the client and the response arriving — a dropped connection, a server crash mid-request, or a timeout would all look identical to a successful send from the client's point of view, and the event would never be retried because it's already gone from the local queue."
+/>
+
+## State diagram — event delivery lifecycle
+
+One event's journey spans two coupled state machines: the client-side
+lifecycle (buffered, sent, acked or dropped) and the server-side
+continuation (received, validated, deduped or persisted). Both "back"
+paths — the retry loop and the eventual drop — are drawn explicitly,
+not just the happy path.
+
+<D2Diagram
+  title="Event delivery lifecycle — client and server halves"
+  type="state"
+  chart={`direction: right
+
+CREATED: { style.fill: "#3b6fd6"; style.font-color: "#ffffff" }
+QUEUED: { style.fill: "#4b5262"; style.font-color: "#ffffff" }
+SENDING: { style.fill: "#0e7c86"; style.font-color: "#ffffff" }
+RETRY_PENDING: { style.fill: "#b8722a"; style.font-color: "#ffffff" }
+ACKED: { style.fill: "#0e7c86"; style.font-color: "#ffffff" }
+DROPPED: { style.fill: "#b23a48"; style.font-color: "#ffffff" }
+RECEIVED: { style.fill: "#0e7c86"; style.font-color: "#ffffff" }
+VALIDATED: { style.fill: "#0e7c86"; style.font-color: "#ffffff" }
+REJECTED: { style.fill: "#b23a48"; style.font-color: "#ffffff" }
+DEDUPED: { style.fill: "#b8722a"; style.font-color: "#ffffff" }
+PERSISTED: { style.fill: "#b23a48"; style.font-color: "#ffffff" }
+
+CREATED -> QUEUED: EventBuilder.build(), added to EventBuffer
+QUEUED -> SENDING: flush trigger (size or time threshold)
+SENDING -> ACKED: server returns 2xx for this event ID
+SENDING -> RETRY_PENDING: network error or 5xx
+RETRY_PENDING -> SENDING: backoff timer fires, resend batch
+RETRY_PENDING -> DROPPED: max attempts exceeded, or local queue full
+ACKED -> RECEIVED: server-side handoff into ingestion pipeline
+RECEIVED -> VALIDATED: schema check passes
+RECEIVED -> REJECTED: schema check fails (missing/mistyped field)
+VALIDATED -> DEDUPED: event_id already seen in dedup window
+VALIDATED -> PERSISTED: event_id new, written to durable storage
+`}
+/>
+
+*The two back edges that matter most: `RETRY_PENDING → SENDING` (the
+retry loop, which is what makes at-least-once possible in the face of
+transient failures) and `RETRY_PENDING → DROPPED` (the explicit
+terminal state once retries or local queue capacity are exhausted — the
+drop policy itself, oldest-dropped vs. newest-rejected, is a deliberate
+design choice covered in the backpressure deep dive below, not an
+unhandled edge case). Note that `DEDUPED` still counts as a successful
+outcome for the client — the SDK sees the same 2xx either way, because
+a duplicate write being silently discarded is not a client-visible
+failure.*
+
+<QuizItem
+  question="An event reaches VALIDATED but the dedup check finds its event_id already in the cache. Does the client see a failure?"
+  answer="No — DEDUPED still returns 2xx to the client. Deduplication is a server-side optimization that makes retries safe, not an error condition; the client's job (get the event acknowledged) is satisfied whether this is the event's first successful persist or a detected repeat of an already-persisted one."
+/>
+
+## Database design — storage schema
+
+The server-side classes above map to three storage concerns: the
+durable event store, a schema registry consulted (not fully designed,
+per this lesson's scope) by `Validator`, and a short-lived dedup index
+consulted by `Deduplicator` — deliberately not the same store as the
+permanent event table.
+
+<D2Diagram
+  title="Ingestion storage schema"
+  type="er"
+  chart={`raw_event: {
+  shape: sql_table
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+  event_id: uuid {constraint: primary_key}
+  event_name: string
+  user_id: uuid
+  anonymous_id: uuid
+  occurred_at: timestamp
+  received_at: timestamp
+  properties: jsonb
+  schema_version: int
+}
+
+event_schema_registry: {
+  shape: sql_table
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+  event_name: string {constraint: primary_key}
+  version: int {constraint: primary_key}
+  required_fields: jsonb
+}
+
+dedup_index: {
+  shape: sql_table
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+  event_id: uuid {constraint: primary_key}
+  first_seen_at: timestamp
+}
+
+event_schema_registry -> raw_event: Validator checks shape against
+dedup_index -> raw_event: Deduplicator guards the write to
+`}
+/>
+
+**`raw_event` is partitioned by `occurred_at`** (the event's own
+timestamp, not `received_at`) — a deliberate design decision, not just
+a column choice. Time-partitioning gives write locality (today's writes
+land in today's partition, not scattered across the whole table's
+history) and makes retention trivial (drop the partition for data older
+than the retention window instead of a row-by-row delete). Partitioning
+by `received_at` instead would seem simpler but breaks time-series
+rollups: a batch of events queued offline for three days and replayed
+on reconnect would land in *today's* partition while representing
+events that *occurred* three days ago, corrupting any daily rollup keyed
+by partition.
+
+**`dedup_index` is a separate, short-TTL store** (an in-memory cache or
+a table with an aggressive TTL/eviction policy) rather than a column on
+`raw_event`, because its job is fundamentally different: `raw_event` is
+permanent, `dedup_index` only needs to answer "have I seen this ID
+recently" for a bounded window (covered in the delivery-guarantee deep
+dive next). Keeping it separate means the dedup check is a fast
+point-lookup against a small, mostly-in-memory structure instead of a
+query against an ever-growing historical table.
+
+<QuizItem
+  question="Why is raw_event partitioned by occurred_at rather than received_at, given that received_at is easier to reason about (it's assigned once, at write time)?"
+  answer="A device that was offline and replays a 3-day-old queued batch on reconnect would write events with an occurred_at from 3 days ago but a received_at of right now. Partitioning by received_at would put those late-arriving old events in today's partition, corrupting any time-series rollup that assumes a partition's contents all belong to that day."
+/>
+
+## Concepts and mechanisms
+
+### Delivery guarantee deep dive
+
+Three positions exist on delivery guarantees, and only one is
+achievable across an unreliable network without unacceptable cost:
+
+- **At-least-once** — the baseline this design commits to: an accepted
+  event is retried until acknowledged, so it's never silently lost, but
+  a retry can cause the *same* event to be sent and even persisted more
+  than once.
+- **Exactly-once, coordinated** — would require a distributed
+  transaction or two-phase commit spanning the client and the server,
+  so a network partition mid-commit can't leave either side unsure
+  whether the write happened. No interviewer-grade system claims true
+  exactly-once across a network boundary — the coordination cost scales
+  badly and the client can crash between "sent" and "learned the
+  outcome" regardless of protocol.
+- **Effectively-once via idempotency** — this design's actual answer:
+  keep at-least-once delivery, but make the *write* idempotent by
+  keying it on the client-generated `event_id`. `Deduplicator` checks
+  `dedup_index` before `EventProcessor.persist()` runs; a duplicate
+  `event_id` short-circuits to "already persisted," and the batch still
+  returns 2xx. Retries become safe to resend blindly because a second
+  delivery of the same event can never produce a second row.
+
+**The dedup window is bounded, not infinite** — `dedup_index` keeps
+`event_id`s for a TTL (e.g. 24 hours), not forever, because an
+unbounded set of every event ID ever seen doesn't fit in a fast
+point-lookup store at scale. A duplicate that arrives *after* the TTL
+expires is no longer recognized as a duplicate and gets persisted a
+second time — a known, accepted gap, not a bug: it trades a vanishingly
+rare double-count (a client would need to be offline and then replay a
+stale queue older than the TTL) for keeping the dedup check cheap for
+every normal-path request. The interview angle below returns to this
+exact edge case with concrete numbers.
+
+<QuizItem
+  question="A device is offline for exactly 25 hours, using a 24-hour dedup TTL, then replays a batch that includes an event that actually was successfully persisted before it went offline. What happens?"
+  answer="The event_id has already aged out of dedup_index, so Deduplicator finds no match and treats it as new — the event gets persisted a second time. This is the known, accepted cost of a bounded dedup window: it's rare (requires being offline longer than the TTL) and the alternative (an unbounded dedup index) doesn't scale."
+/>
+
+### Ordering deep dive
+
+- **No cross-client ordering guarantee.** Two different users' events
+  have no defined relative order — there's no shared clock or shared
+  queue between them, and nothing in this design promises one.
+- **Best-effort per-client ordering, via partition key.** When events
+  flow into any downstream partitioned stream or queue (a detail this
+  LLD scope only needs to state, not fully build), keying the partition
+  on `userId`/`anonymousId` keeps one client's events in relative
+  arrival order within that partition — the same client ID always
+  routes to the same partition, so its events aren't interleaved with
+  a different partition's reordering.
+- **Out-of-order arrival at the processor is handled by the event's own
+  timestamp, not arrival order.** A batch queued offline and replayed
+  later arrives *after* newer events from other clients, but each
+  event carries its own `occurred_at` from creation time — any
+  time-series rollup groups and sorts by that field, not by when
+  `EventProcessor.persist()` happened to run. This is exactly why
+  `raw_event` is partitioned by `occurred_at` above, not `received_at`.
+
+### Batching mechanics deep dive
+
+- **Trigger conditions, whichever fires first:** a size threshold
+  (e.g. 20 events buffered) or a time threshold (e.g. 10 seconds since
+  the last flush) — size protects against unbounded memory growth
+  during a burst, time protects against a trickle of events sitting
+  unsent for minutes during quiet periods.
+- **Partially-acked batches are the normal case, not an edge case.**
+  The server validates and dedups each event in a batch independently
+  and returns a per-event outcome (`accepted: [...], rejected: [...]`),
+  not one all-or-nothing verdict for the whole batch. `Transport` only
+  removes the *accepted* event IDs from the local queue; rejected ones
+  are handled per the schema-validation policy below, and any event
+  simply missing from the response (a partial server failure) stays
+  queued and gets retried on the next flush.
+
+<KeyStat
+  value="20 events / 10s"
+  label="Typical SDK batch trigger — whichever threshold fires first"
+  detail="Segment's published SDKs default to a comparable shape: flush after a configurable event count (their default is around 15-20) or a configurable interval (their default is around 10s), capped by a maximum batch payload size (Segment's HTTP Tracking API caps a batch request at 500KB, individual events at 32KB) so one flush can never balloon into an unbounded request."
+/>
+
+### Schema validation deep dive
+
+- **Required-field and type checks** run against the schema named by
+  `event_name` in `event_schema_registry` — missing a required field or
+  a type mismatch (a `price` sent as a string instead of a number) is
+  the rejection condition.
+- **Unknown-field handling is permissive, not strict** — an event
+  carrying an extra property the registry doesn't know about is
+  accepted with the extra field stored as-is, not rejected. Strict
+  mode (reject on any unrecognized field) sounds safer but breaks the
+  moment a newer app version ships a new optional property before the
+  schema registry is updated for it — permissive mode lets the SDK and
+  the schema evolve independently, at the cost of some genuinely
+  malformed data slipping through as an "extra field" rather than a
+  caught error.
+- **What "reject" means operationally:** a rejected event is not
+  silently discarded — it's written to a dead-letter store (a
+  quarantine table separate from `raw_event`) with the validation
+  failure reason attached, so a spike in malformed events from one SDK
+  version is diagnosable later instead of invisible. The 2xx response
+  to the client still reports it under `rejected: [...]` so client-side
+  telemetry about the SDK's own health can surface the problem too.
+
+### Backpressure and local-queue-overflow deep dive
+
+- **The local queue is bounded, on purpose.** An unbounded in-memory
+  buffer on the host app's process risks OOM-ing the app itself during
+  a prolonged outage — the analytics SDK crashing the host app it's
+  supposed to be silently instrumenting is a strictly worse outcome
+  than losing some events.
+- **Overflow policy is an explicit choice, not an afterthought:**
+  drop-oldest (evict the longest-queued events first, keeping the queue
+  biased toward recent activity) is the more common default for
+  product analytics, because a recent event is usually more actionable
+  than a much older one by the time the queue is full; drop-newest
+  (reject new `track()` calls once full, keep what's already queued)
+  is the alternative when preserving a specific in-progress funnel
+  matters more than fresh data. Sampling (probabilistically drop a
+  fraction of *all* queued events, old and new alike, to make room) is
+  a third option that avoids a hard bias in either direction, at the
+  cost of every retained event being a slightly less complete picture.
+- Whichever policy is chosen, it must be observable — the SDK should
+  expose a counter of dropped events so a host app (or its own
+  telemetry) can detect "we're losing data" rather than silently
+  degrading.
+
+<D2Diagram
+  title="Server-side ingestion pipeline — Chain of Responsibility"
+  type="architecture"
+  chart={`direction: right
+
+ingestion: Ingestion Controller {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+validator: Validator {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+deadletter: Dead-letter Store {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+dedup: Deduplicator {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+processor: Event Processor (enrich) {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+store: raw_event store {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+
+ingestion -> validator: per-event batch
+validator -> deadletter: schema check fails (quarantined, reason attached)
+validator -> dedup: schema check passes
+dedup -> store: event_id already seen -> discard write, still 2xx
+dedup -> processor: event_id new
+processor -> store: attach ingestion timestamp, sequence, geo-from-IP
+`}
+/>
+
+*Each stage can short-circuit the chain (a rejected event never reaches
+`Deduplicator`; a deduped event never reaches `EventProcessor`) — this
+is the Chain of Responsibility pattern, covered next, applied to the
+exact pipeline this diagram draws.*
+
+<QuizItem
+  question="A batch of 20 events arrives; 3 fail schema validation, 2 are duplicates of already-persisted events, and 15 are new and valid. How many rows get written to raw_event, and what does the client's response look like?"
+  answer="15 rows are written. The response reports accepted: [the 17 that passed validation — 15 new + 2 deduped, since a deduped event still counts as successfully handled] and rejected: [the 3 that failed schema validation, with reasons]. The 3 rejected events also land in the dead-letter store for later inspection, not silently dropped."
+/>
+
+## Design patterns
+
+Five patterns replace what would otherwise be constructor overload,
+scattered `if/else` transport logic, and a hard-coded call chain.
+
+**Builder — `Event.builder()...build()`.** An event has a handful of
+required fields (`name`, `timestamp`) and several optional ones
+(`userId` vs. `anonymousId`, arbitrary `properties`, `context`
+metadata like device/app version). A telescoping constructor
+(`new Event(name, timestamp, userId, anonymousId, properties, context,
+...)`) forces every caller to pass every parameter in a fixed
+position, including nulls for the ones they don't have. `EventBuilder`
+lets a caller chain only the fields it has (`builder().withName(...)
+.withProperty(...).build()`) and centralizes validation (e.g. "either
+`userId` or `anonymousId` must be set") in one `build()` method instead
+of every call site remembering the rule.
+
+**Strategy — `Transport`.** Covered in the class design section:
+`HttpTransport` is one implementation of the `Transport` interface; a
+future `WebSocketTransport` or a message-queue-backed transport swaps
+in without touching `AnalyticsClient` or `EventBuffer`. This is also
+where `RetryPolicy` earns its own class rather than being a hardcoded
+loop inside `Transport` — a fixed-delay policy, exponential backoff, or
+jittered backoff are each a `RetryPolicy` implementation, swappable
+independently of which `Transport` is in use.
+
+**Observer — the flush trigger.** `EventBuffer` doesn't call
+`Transport.send()` directly inside `add()`. Instead, a size-threshold
+check and a time-threshold timer are each observers that fire a
+`flush()` event when their condition is met, and `AnalyticsClient`
+subscribes to that event to trigger the actual send. This decouples
+*when* to flush (a timing/counting concern) from *how* to flush (a
+network concern) — a future third trigger (e.g. "flush immediately on
+app backgrounding, to avoid losing queued events before the OS
+suspends the process") is a third observer, not a new branch inside
+`EventBuffer.add()`.
+
+**Chain of Responsibility — the server-side pipeline.** `validate →
+dedup → enrich → persist`, exactly as drawn in the pipeline diagram
+above. Each stage is a self-contained handler that either passes the
+event to the next stage or short-circuits it (a validation failure
+never reaches `Deduplicator`; a deduplicated event never reaches
+`EventProcessor`). Adding a new stage — say, a bot-traffic filter
+between `Validator` and `Deduplicator` — means inserting one new
+handler into the chain, not editing `IngestionController`'s internals.
+
+**Singleton — `AnalyticsClient` (optional, flagged trade-off).** Most
+real SDKs expose a single global client instance per host app (`import
+Analytics from "sdk"; Analytics.track(...)` callable from anywhere
+without threading a reference through the whole app). That convenience
+costs testability — every test that touches `AnalyticsClient` shares
+one global instance unless the SDK adds an explicit reset/mock hook —
+and it doesn't support a host app that legitimately needs two
+independent client instances (e.g. two separate analytics destinations
+with different buffering policies). Dependency injection (construct
+one instance in a composition root, pass it to whatever needs it) sidesteps
+both costs at the price of the caller having to plumb the reference
+through. Either is a defensible default; name the trade-off rather than
+picking one silently.
+
+<QuizItem
+  question="Why is the flush trigger (size threshold, time threshold) modeled as Observers on EventBuffer rather than as if/else checks inside add()?"
+  answer="It separates the timing/counting concern (when to flush) from the send concern (how to flush), so a new trigger — like flushing on app backgrounding — is a new observer registered on EventBuffer, not a new branch added to add() that also has to know how to call Transport."
+/>
+
+## Trade-offs
+
+<CompareTable
+  title="Batching interval/size — larger vs. smaller"
+  rows={[
+    {
+      approach: "Larger batches / longer flush interval",
+      pros: [
+        "Fewer HTTP requests, lower network and battery/CPU overhead",
+        "Better amortizes per-request overhead (TLS handshake, headers) across more events",
+      ],
+      cons: [
+        "Higher data latency before an event is durably acked",
+        "A lost batch has a bigger blast radius — more events at risk in one failed send",
+      ],
+    },
+    {
+      approach: "Smaller batches / shorter flush interval",
+      pros: [
+        "Lower latency from track() to durable storage",
+        "Smaller blast radius if any single send fails",
+      ],
+      cons: [
+        "More HTTP requests, higher network/battery cost",
+        "Worse amortization of fixed per-request overhead",
+      ],
+      chosenBecause: "This lesson's default (20 events / 10s) balances both — small enough that a failed batch loses at most a few seconds of activity, large enough to avoid one request per event",
+    },
+  ]}
+/>
+
+<CompareTable
+  title="Async vs. sync SDK send"
+  rows={[
+    {
+      approach: "Async, fire-and-forget with local queuing",
+      pros: [
+        "track() returns immediately — never blocks the host app's UI thread",
+        "Network slowness or an outage degrades gracefully via the retry queue instead of hanging the caller",
+      ],
+      cons: [
+        "A window exists where an event is queued but not yet durably acked",
+      ],
+      chosenBecause: "The non-functional requirement that the SDK never block the host app's main thread rules out sync as a default",
+    },
+    {
+      approach: "Sync, blocking send",
+      pros: ["Caller knows the outcome (success/failure) immediately"],
+      cons: [
+        "Every track() call's latency is now bounded by network round-trip time",
+        "A slow or down endpoint directly stalls the host app",
+      ],
+    },
+  ]}
+/>
+
+<CompareTable
+  title="At-least-once + dedup vs. distributed-transaction exactly-once"
+  rows={[
+    {
+      approach: "At-least-once delivery + idempotency-key dedup",
+      pros: [
+        "Simple to implement and reason about — a point lookup against dedup_index",
+        "Scales horizontally without cross-node coordination on every write",
+      ],
+      cons: [
+        "Correctness holds only within the bounded dedup window, not forever",
+      ],
+      chosenBecause: "The cost of a rare, bounded-window duplicate is far lower than the cost and complexity of distributed-transaction coordination",
+    },
+    {
+      approach: "Two-phase commit / distributed transaction",
+      pros: ["Would give a stronger correctness guarantee, in theory"],
+      cons: [
+        "Coordination overhead scales badly with ingestion throughput",
+        "A client crash between phases still leaves an unresolved state — network boundaries don't actually get you true exactly-once",
+      ],
+    },
+  ]}
+/>
+
+<CompareTable
+  title="Client-generated vs. server-assigned event ID"
+  rows={[
+    {
+      approach: "Client-generated UUID at creation time",
+      pros: [
+        "Makes deduplication possible at all — a retried request carries the same ID as the original attempt",
+        "The client can log/reference the ID before any network call happens",
+      ],
+      cons: [
+        "Trusts the client to generate well-distributed, effectively non-colliding IDs (standard UUIDv4 collision risk is negligible at any realistic scale)",
+      ],
+      chosenBecause: "Server-assigned IDs can't distinguish a retry from a genuinely new event, which breaks dedup entirely",
+    },
+    {
+      approach: "Server-assigned ID on arrival",
+      pros: ["No trust placed in client-side ID generation"],
+      cons: [
+        "A retried request looks identical to a new event — there is no way to recognize and discard a duplicate",
+      ],
+    },
+  ]}
+/>
+
+## Worked example: one event, a retry, and a genuine duplicate
+
+Trace `evt-9f2a...`, created when a user taps "Add to Cart" on a
+product page.
+
+`t+0s` — `AnalyticsClient.track("product_added", properties)` is called
+with `sku=SKU-4471, price=39.99`. It builds
+`Event(id=evt-9f2a..., name=product_added, properties=[sku, price])`
+via `EventBuilder` and adds it to `EventBuffer`. The batch threshold is
+20 events or 10 seconds, whichever fires first.
+
+`t+7s` — the time threshold hasn't fired yet, but 20 events have
+accumulated (a busy session), so `EventBuffer` fires its flush
+observer. `Transport.send(batch)` goes out — and a network blip drops
+the connection before any response arrives.
+
+`t+7s` — `RetryPolicy` schedules a retry with exponential backoff:
+1s, 2s, 4s between attempts.
+
+`t+11s` — the batch, unchanged, is resent. The server's `Validator`
+passes it, `Deduplicator` checks `evt-9f2a...` against `dedup_index`,
+finds no match (first time this ID has actually reached the server),
+and `EventProcessor` persists it. The server responds 200 with
+`evt-9f2a...` in `accepted`. `Transport` removes it from the local
+queue.
+
+Now the actual duplicate: suppose instead that the **first** send at
+`t+7s` *did* reach the server and *was* persisted — but the 200
+response was lost on the way back to the client (a one-way network
+failure, not a two-way one). The client has no way to distinguish this
+from "the request never arrived," so it retries identically.
+
+<D2Diagram
+  title="Worked example — lost ack triggers a safe duplicate retry"
+  type="sequence"
+  chart={`shape: sequence_diagram
+sdk: AnalyticsClient
+tx: HttpTransport
+net: Network
+srv: IngestionController
+dedup: Deduplicator
+store: raw_event
+
+sdk -> tx: "flush(), send(batch containing evt-9f2a)"
+tx -> net: "POST /v1/events"
+net -> srv: "request delivered"
+srv -> dedup: "isDuplicate(evt-9f2a)"
+dedup -> srv: "false, first time seen"
+srv -> store: "INSERT evt-9f2a"
+srv -> dedup: "markSeen(evt-9f2a)"
+srv -> net: "200 OK, accepted: evt-9f2a"
+net -> tx: "response lost in transit"
+tx -> tx: "no ack received before timeout, RetryPolicy backoff"
+tx -> srv: "POST /v1/events, retry with same batch, same evt-9f2a"
+srv -> dedup: "isDuplicate(evt-9f2a)"
+dedup -> srv: "true, already in dedup_index"
+srv -> store: "skip INSERT, discard duplicate write"
+srv -> tx: "200 OK, accepted: evt-9f2a"
+tx -> sdk: "ack(evt-9f2a), remove from local queue"
+`}
+/>
+
+The server persisted `evt-9f2a...` exactly once even though the
+network carried two full requests for it — the client-generated ID and
+the `Deduplicator` check are what make this safe. Without them, the
+client's only correct choice on a lost ack would be to *not* retry
+(risking real data loss on genuine failures) or accept the risk of
+double-counting every time an ack goes missing. Idempotency-key dedup
+is what turns "assume delivery might not be exactly-once and retry
+anyway" into a safe default instead of a gamble.
+
+## Interview angle
+
+**"Your dedup cache has a 24-hour TTL. A device was offline for 3 days
+and now replays its local queue — walk through what happens."** Every
+event in the replayed queue that was *never* successfully sent before
+going offline is genuinely new — `Deduplicator` correctly persists it.
+But if any event in that queue *had* already reached the server before
+the device went offline (its ack was in flight when the device lost
+connectivity), the dedup window has long since expired by day 3, so
+`Deduplicator` sees no match and persists it a second time. The honest
+answer names this as an accepted, bounded-probability gap — not a bug
+to hand-wave past — and the fix, if this scenario turns out to matter
+for a specific product, is either a longer TTL (more memory cost per
+tracked ID) or a persistent (not TTL-evicted) dedup store keyed by a
+composite of `event_id` and a coarse time bucket, trading storage for
+a wider window.
+
+**"How would you detect and handle a client sending a burst of
+malformed events without dropping the whole batch or silently losing
+the well-formed events in it?"** This is the per-event partial-ack
+design from the batching deep dive, narrated: `Validator` runs
+per-event inside the batch, not once for the whole batch, so 3 bad
+events out of 20 reject only those 3 (to the dead-letter store, with a
+reason attached) while the other 17 proceed through `Deduplicator` and
+`EventProcessor` normally. The client's response distinguishes
+`accepted` from `rejected` per event ID, so the SDK — and downstream
+monitoring — can tell "this batch mostly succeeded" from "this batch
+totally failed" instead of one opaque all-or-nothing status.
+
+**"The product team wants per-event-type schemas that evolve over
+time. How does your design accommodate a new required field on an
+existing event type without breaking already-deployed SDK versions?"**
+`event_schema_registry` is versioned (`event_name` + `version` as a
+composite key), and `Event.schema_version` records which version an
+event was validated against at write time. A new required field ships
+as a new schema *version*, not an edit to the existing one — older
+deployed SDK versions keep sending events that validate cleanly against
+the older schema version they were built against, while newer SDK
+versions opt into the new version. `Validator` looks up the schema by
+the version the event declares (or the latest version if unspecified,
+per a policy decision), so old and new client versions coexist instead
+of the rollout requiring every device to update atomically.
+
+## Practice & Self-Check
+
+### Recap quiz
+
+<QuizItem
+  question="What delivery guarantee does this design actually claim, and what mechanism makes it 'effectively-once' rather than truly exactly-once?"
+  answer="At-least-once delivery from the SDK's retry loop, made effectively-once by idempotency-key deduplication at the server (Deduplicator checking dedup_index before EventProcessor.persist()). It's not truly exactly-once because the dedup window is bounded (a TTL), so a duplicate arriving after that window is missed."
+/>
+
+<QuizItem
+  question="Why does client-generated event ID enable deduplication in a way server-assigned ID cannot?"
+  answer="A retried request carries the same client-generated ID as its original attempt, so the server can recognize it as a repeat. A server-assigned ID is only assigned on arrival, so a retry and a genuinely new event are indistinguishable — there's no ID to compare against."
+/>
+
+<QuizItem
+  question="Name the two conditions that trigger a buffer flush, and why both exist instead of just one."
+  answer="A size threshold (e.g. 20 events) and a time threshold (e.g. 10 seconds), whichever fires first. Size alone risks events sitting unsent for a long time during low-traffic periods; time alone risks unbounded memory growth during a traffic burst — together they bound both worst cases."
+/>
+
+<QuizItem
+  question="What happens to the oldest queued event under a drop-oldest overflow policy when the local queue hits capacity?"
+  answer="It's evicted to make room for the newest track() call, on the reasoning that a stale queued event is usually less actionable than fresh activity by the time the queue is full — the alternative, drop-newest, instead rejects the new call and keeps what's already queued."
+/>
+
+<QuizItem
+  question="Which design pattern makes Transport swappable between HTTP, WebSocket, or a message-queue client without touching AnalyticsClient, and why does that matter?"
+  answer="Strategy — Transport is an interface AnalyticsClient depends on, not a concrete class it constructs internally. It matters because a new delivery mechanism becomes one new class implementing Transport, not a rewrite of the buffering/batching logic that has nothing to do with how bytes get to the server."
+/>
+
+<QuizItem
+  question="Why is there no global ordering guarantee across events from different clients, and what does per-client ordering rely on instead?"
+  answer="Different clients have no shared clock or shared queue, so nothing in the design can promise their relative order. Per-client ordering is best-effort only, achieved by keying any downstream partitioned stream on userId/anonymousId so one client's events land in the same partition and aren't interleaved with a different client's reordering."
+/>
+
+<QuizItem
+  question="A batch returns accepted: [...] and rejected: [...] instead of one pass/fail status for the whole batch. What design decision does that reflect?"
+  answer="That validation and dedup happen per-event inside a batch, not once for the whole batch — a Chain of Responsibility pipeline where each event is evaluated independently, so a few malformed events don't force discarding the well-formed events sent alongside them."
+/>
+
+### Open design challenge
+
+Extend the SDK to support **offline queuing that survives an app
+restart or device reboot** — not just an in-memory buffer — while
+keeping the at-least-once + dedup guarantee intact. Which class(es)
+change, what gets persisted to disk and when, and how does startup
+replay interact with the batching and retry logic already designed?
+
+<details>
+<summary>Reference answer (try the design yourself first)</summary>
+
+**Which class changes:** `EventBuffer` gets a second implementation,
+`PersistentEventBuffer`, behind the same interface `AnalyticsClient`
+already depends on (`add()`, `drain()`) — this is another instance of
+the Strategy seam already established for `Transport`, applied to
+buffering instead. `PersistentEventBuffer` writes each event to local
+disk storage (a small embedded store — SQLite on mobile, IndexedDB on
+web) synchronously inside `add()`, in addition to keeping it in the
+in-memory queue for fast reads; nothing about `EventBuilder` or `Event`
+itself needs to change, since they were already serializable value
+objects.
+
+**What gets persisted, and when:** every event is written to disk the
+moment `add()` is called — not batched to disk, because the whole
+point is surviving a crash between `track()` and the next successful
+flush. On successful ack, `Transport`'s ack-handling step (already the
+place that removes events from the in-memory queue) is extended to
+also delete the corresponding rows from disk — the durability boundary
+moves from "in the process's memory" to "on the device's disk," but the
+ack-then-remove ordering from the sequence diagram earlier in this
+lesson is unchanged.
+
+**Startup replay:** on process start, `AnalyticsClient`'s
+initialization reads any rows still on disk (events that were queued
+but never acked before the last shutdown/crash) and re-adds them to the
+in-memory queue before accepting any new `track()` calls, so they're
+eligible for the very next flush. Because every event still carries its
+original client-generated ID from before the restart, `Deduplicator`
+on the server handles a startup-replayed event exactly like any other
+retry — if it happened to reach the server and get acked in the window
+between disk-write and the crash (a narrow race, but possible), the
+dedup check discards the replay's duplicate write safely, and the
+client still gets its ack and clears the disk row. No new server-side
+mechanism is needed; the existing idempotency design already covers
+this case, which is precisely the payoff of having built dedup in from
+the start rather than bolting it on later.
+
+</details>
+
+<Rubric
+  items={[
+    "Introduced a PersistentEventBuffer (or equivalently named) implementation behind the existing EventBuffer interface, rather than rewriting AnalyticsClient's buffering logic",
+    "Specified that events are written to disk synchronously on add(), not batched to disk, so a crash between track() and the next flush doesn't lose them",
+    "Extended the existing ack-handling step to also clear the on-disk copy, keeping a single ack-then-remove ordering rather than two separate cleanup paths",
+    "Described startup replay: reading unacked on-disk events back into the in-memory queue before accepting new track() calls",
+    "Explained why no new server-side mechanism is needed — the existing client-generated-ID dedup already makes a startup-replayed event safe to resend",
+  ]}
+/>
