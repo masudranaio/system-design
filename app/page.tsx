@@ -3,6 +3,7 @@ import { ArrowRight, Network, Box, Building2, MessageSquare } from "lucide-react
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { SECTION_TRACK, FALLBACK_TRACK } from "@/lib/nav-icons";
 
 const MODULES = [
   {
@@ -11,6 +12,9 @@ const MODULES = [
       "Scalability, availability, and the core building blocks behind distributed systems.",
     href: "/hld",
     icon: Network,
+    // Key into SECTION_TRACK — matches the sidebar's section title, which
+    // differs slightly from this card's display title.
+    track: "High-Level Design",
   },
   {
     title: "Low-Level Design concepts",
@@ -18,6 +22,7 @@ const MODULES = [
       "Object-oriented design, patterns, and database schema decisions at the class level.",
     href: "/lld",
     icon: Box,
+    track: "Low-Level Design",
   },
   {
     title: "Case studies",
@@ -25,6 +30,7 @@ const MODULES = [
       "Full HLD + LLD walkthroughs of real systems, like Ticketmaster, applying the concepts end to end.",
     href: "/case-studies/ticketmaster/hld",
     icon: Building2,
+    track: "Case Studies",
   },
   {
     title: "Interview prep",
@@ -32,6 +38,7 @@ const MODULES = [
       "Framing, trade-off talk tracks, and open-ended practice challenges for the live interview.",
     href: "/interview-prep",
     icon: MessageSquare,
+    track: "Interview Prep",
   },
 ];
 
@@ -71,31 +78,41 @@ export default function HomePage() {
         aria-label="Course sections"
         className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
       >
-        {MODULES.map((module) => (
-          <Link
-            key={module.href}
-            href={module.href}
-            aria-label={module.title}
-            className="group rounded-lg outline-none"
-          >
-            <Card
-              className={cn(
-                "h-full border-line group-hover:-translate-y-0.5 group-hover:border-brand/50 group-hover:shadow-lg",
-                "group-focus-visible:ring-2 group-focus-visible:ring-ring group-focus-visible:ring-offset-2 group-focus-visible:ring-offset-background",
-              )}
+        {MODULES.map((module) => {
+          const track = SECTION_TRACK[module.track] ?? FALLBACK_TRACK;
+          return (
+            <Link
+              key={module.href}
+              href={module.href}
+              aria-label={module.title}
+              className="group rounded-lg outline-none"
             >
-              <CardHeader>
-                <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-line bg-brand/10 text-brand">
-                  <module.icon className="size-4" aria-hidden="true" />
-                </span>
-                <CardTitle>{module.title}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <CardDescription>{module.description}</CardDescription>
-              </CardContent>
-            </Card>
-          </Link>
-        ))}
+              <Card
+                className={cn(
+                  "relative h-full overflow-hidden border-line bg-surface transition-shadow group-hover:-translate-y-0.5 group-hover:border-brand/50 group-hover:shadow-md",
+                  "group-focus-visible:ring-2 group-focus-visible:ring-ring group-focus-visible:ring-offset-2 group-focus-visible:ring-offset-background",
+                )}
+              >
+                <div className={cn("absolute inset-x-0 top-0 h-[3px]", track.rail)} aria-hidden="true" />
+                <CardHeader className="justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className={cn("flex size-9 shrink-0 items-center justify-center rounded-md", track.bg)}>
+                      <module.icon className={cn("size-4", track.text)} aria-hidden="true" />
+                    </span>
+                    <CardTitle>{module.title}</CardTitle>
+                  </div>
+                  <ArrowRight
+                    className="size-4 shrink-0 text-brand opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+                    aria-hidden="true"
+                  />
+                </CardHeader>
+                <CardContent>
+                  <CardDescription>{module.description}</CardDescription>
+                </CardContent>
+              </Card>
+            </Link>
+          );
+        })}
       </section>
     </div>
   );
