@@ -1,0 +1,811 @@
+---
+title: "Notification Service — Low-Level Design"
+module: "04-case-studies/notification-service"
+---
+
+## Problem framing
+
+Three call sites, three different services, one shared need:
+
+- **Ticketmaster's booking service** confirms a purchase and needs the
+  buyer to get an email receipt and a push notification within seconds.
+- **An auth service** issues a one-time password and needs an SMS
+  delivered in under 5 seconds, or the login flow times out.
+- **A pricing service** detects a price drop on a watched item and wants
+  an email sent — no urgency, best-effort within a few minutes is fine.
+
+Every one of those services could open its own SMTP connection, call
+Twilio directly, and hand-roll its own retry loop. In practice none of
+them should — retry policy, provider failover, delivery tracking, and
+dedup are the same problem solved three times over, with three chances
+to get it wrong. The notification service exists so that "send a
+message to a user" is a single internal API with one correct
+implementation, called by every other backend system in this course
+(Ticketmaster's booking confirmation, a ride-sharing driver-arrival
+alert, an Amazon Locker pickup code, a Netflix watch-party invite —
+all of them ultimately reduce to "send a notification").
+
+An interviewer expects clarifying questions before any class gets
+named:
+
+- Which channels — email, SMS, push, or all three from day one?
+- Transactional only (triggered by a specific event, one recipient) or
+  also bulk/marketing (segmented audiences, scheduled campaigns)?
+- Does the caller need a synchronous result, or is "accepted" enough
+  and the caller checks status later?
+- What's the retry and dedup contract — can the caller safely retry its
+  own request without causing a double-send?
+
+This lesson answers those the way a real interview settles them:
+email + SMS + push, transactional only, fire-and-forget from the
+caller's point of view (queue-and-worker, argued below), at-least-once
+delivery made effectively-once via idempotency-key dedup. The boundary
+this lesson designs: channel abstraction, template rendering, the
+delivery-status lifecycle, retry, and dedup. Out of scope: the
+campaign/segmentation layer that might sit in front of this service,
+building an actual SMTP/SMS/push gateway (providers are external,
+integrated behind an interface), a rich preference center beyond one
+opt-out gate, and cross-region fan-out at scale (deferred to this case
+study's HLD side).
+
+<QuizItem
+  question="Why does this lesson scope the notification service as transactional-only rather than also handling marketing campaigns?"
+  answer="Transactional sends (one recipient, triggered by a specific event, needs a tight delivery-status/retry contract) and marketing campaigns (segmented audiences, scheduling, opt-in list management) are different problems with different failure tolerances — a dropped campaign email is a lesser incident than a dropped booking confirmation. Conflating them would force one design to satisfy both a strict delivery guarantee and a bulk-scheduling UI at once."
+/>
+
+## Requirements at the object level
+
+Nouns that need behavior, translated from the functional requirements:
+
+- **`NotificationRequest`** — what a caller submits: recipient,
+  template, variables, target channel(s), idempotency key.
+- **`Notification`** — one channel-specific send, tracked through its
+  own delivery lifecycle.
+- **`Template`** — a named, versioned, channel-shaped message
+  definition with variable placeholders.
+- **`NotificationChannel`** — the abstraction over "how do I send on
+  this channel," not a concrete email/SMS/push class each with its own
+  duplicated send logic.
+- **`Provider`** — the concrete vendor behind a channel (a specific
+  SMTP relay, a specific SMS gateway).
+- **`DeliveryAttempt`** — one try at dispatching a `Notification`
+  through a `Provider`.
+
+{/* concept-dependency: LLD-02 not yet built, explained inline */}
+
+A common modeling mistake worth naming explicitly: treating `Email`,
+`SMS`, and `Push` as three separate top-level domain classes, each with
+its own copy of `send()`, `retryCount`, and `status` fields. That
+duplicates every mechanism (retry, dedup, status tracking) three times
+and means adding a fourth channel means writing a fourth copy. They're
+three interchangeable *implementations* of one `NotificationChannel`
+interface — the Strategy pattern, covered fully below — not three
+domain concepts.
+
+**Cardinalities:**
+
+- One `NotificationRequest` → one-or-many `Notification`s (one per
+  target channel — a request for `[email, push]` creates two
+  `Notification` rows, each with its own independent delivery lifecycle)
+- One `Notification` → many `DeliveryAttempt`s (one per retry)
+- One `Template` → many rendered `Notification`s over its lifetime
+
+**The idempotency-key contract, decided explicitly:** the caller
+supplies the key (e.g. `booking-4821-confirmed`), scoped to be unique
+per *logical* notification, not per attempt or per channel. The
+alternative — deriving a key by hashing the request content — is
+rejected here because two legitimately different logical events can
+hash to similar content (two booking confirmations with the same
+template and similar variables), while a caller-supplied key encodes
+business meaning the service can't infer. The key lives on
+`NotificationRequest` and is copied onto every `Notification` it
+produces, so a retried request with the same key finds the same rows
+regardless of how many channels the original request targeted.
+
+<QuizItem
+  question="A NotificationRequest targets [email, push] for the same booking confirmation. How many Notification rows does that create, and why not one row covering both channels?"
+  answer="Two rows — one per channel. Each channel has its own independent delivery lifecycle (email might bounce while push succeeds immediately), its own DeliveryAttempt history, and its own provider failover path, so collapsing them into one row would force one status field to represent two independent outcomes."
+/>
+
+## Class diagram
+
+{/* concept-dependency: LLD-06 not yet built, explained inline */}
+
+`NotificationChannel` is the seam the whole design hangs off: an
+interface with one method, `send()`, implemented once per channel.
+`Provider` is a second, independent interface nested under each
+channel — deliberately separate from `NotificationChannel` rather than
+folded into one combined enum, because "which channel" (email vs. SMS)
+and "which vendor on that channel" (primary vs. secondary SMTP relay)
+vary independently: a failover swaps the provider without touching the
+channel, and a new channel doesn't imply anything about how many
+providers it needs.
+
+<D2Diagram title="Notification Service — core class diagram" type="class" chart={`
+direction: right
+
+NotificationService: {
+  shape: class
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+  +send(request NotificationRequest): "Notification[]"
+  +getStatus(notificationId): DeliveryStatus
+}
+
+NotificationRequest: {
+  shape: class
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+  +idempotencyKey: String
+  +recipient: String
+  +templateName: String
+  +variables: Map
+  +channels: "Channel[]"
+}
+
+Notification: {
+  shape: class
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+  +id: String
+  +idempotencyKey: String
+  +recipient: String
+  +channel: Channel
+  +templateId: String
+  -renderedPayload: RenderedMessage
+  -status: DeliveryStatus
+  -attemptCount: Int
+  +recordAttempt(attempt): void
+}
+
+DeliveryAttempt: {
+  shape: class
+  +id: String
+  +notificationId: String
+  +attemptNumber: Int
+  +providerUsed: String
+  +attemptedAt: DateTime
+  +result: AttemptResult
+  +errorCode: String
+}
+
+Template: {
+  shape: class
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+  +id: String
+  +channel: Channel
+  +name: String
+  +version: Int
+  +subjectTemplate: String
+  +bodyTemplate: String
+}
+
+TemplateRenderer: {
+  shape: class
+  +render(template Template, variables Map): RenderedMessage
+}
+
+NotificationChannel: {
+  shape: class
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+  +send(message RenderedMessage, recipient): DeliveryResult
+}
+
+EmailChannel: {
+  shape: class
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+  +send(message, recipient): DeliveryResult
+}
+
+SMSChannel: {
+  shape: class
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+  +send(message, recipient): DeliveryResult
+}
+
+PushChannel: {
+  shape: class
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+  +send(message, recipient): DeliveryResult
+}
+
+Provider: {
+  shape: class
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+  +dispatch(message, recipient): DeliveryResult
+}
+
+PrimarySMTPProvider: {shape: class; style.fill: "#b8722a"; style.font-color: "#ffffff"}
+SecondarySMTPProvider: {shape: class; style.fill: "#b8722a"; style.font-color: "#ffffff"}
+
+NotificationService -> NotificationRequest: accepts
+NotificationService -> Notification: creates (1 -> *)
+NotificationService -> TemplateRenderer: uses
+NotificationService -> NotificationChannel: dispatches via (injected, Strategy)
+Notification -> DeliveryAttempt: composes history (1 -> *)
+Notification -> Template: references (not owned)
+TemplateRenderer -> Template: reads
+TemplateRenderer -> Notification: produces renderedPayload for
+EmailChannel -> NotificationChannel: implements
+SMSChannel -> NotificationChannel: implements
+PushChannel -> NotificationChannel: implements
+EmailChannel -> Provider: uses (injected, Strategy)
+PrimarySMTPProvider -> Provider: implements
+SecondarySMTPProvider -> Provider: implements
+`} />
+
+`NotificationChannel` and `Provider` are both **injected**, not owned
+— `NotificationService` holds a reference to whichever `Channel` the
+request needs, and `EmailChannel` holds a reference to whichever
+`Provider` is currently active, resolved by a factory (below) rather
+than constructed inline. `Notification` **composes** its
+`DeliveryAttempt` history (attempts don't outlive their notification),
+while `Template` is only **referenced** — a `Notification` points at a
+`templateId` and a *frozen copy* of the rendered output, not a live
+reference to a `Template` object that could still change.
+
+<QuizItem
+  question="Why are Provider and NotificationChannel modeled as two separate interfaces instead of one combined 'channel+vendor' enum like EMAIL_VIA_SENDGRID?"
+  answer="Channel and provider vary independently: a failover event swaps PrimarySMTPProvider for SecondarySMTPProvider without touching EmailChannel or NotificationService at all, and adding a new channel doesn't imply anything about how many providers it needs. A combined enum would force every channel-provider pair to be enumerated up front and would make a provider swap look like a channel change to anything reading the code."
+/>
+
+## State machine — delivery-status lifecycle
+
+{/* concept-dependency: LLD-04 not yet built, explained inline */}
+
+A `Notification`'s status has more exits than a happy-path
+`QUEUED → SENT → DELIVERED` line suggests: a send can fail transiently
+and retry, fail permanently and dead-letter, or *look* like it
+succeeded and still bounce after the fact.
+
+<D2Diagram title="Notification delivery-status lifecycle" type="state" chart={`
+direction: right
+
+lifecycle_start: {shape: circle; width: 24; height: 24; label: ""}
+QUEUED: {style.fill: "#4b5262"; style.font-color: "#ffffff"}
+SENDING: {style.fill: "#0e7c86"; style.font-color: "#ffffff"}
+SENT: {style.fill: "#0e7c86"; style.font-color: "#ffffff"}
+DELIVERED: {style.fill: "#0e7c86"; style.font-color: "#ffffff"}
+BOUNCED: {style.fill: "#b23a48"; style.font-color: "#ffffff"}
+FAILED: {style.fill: "#b8722a"; style.font-color: "#ffffff"}
+DEAD_LETTERED: {style.fill: "#b23a48"; style.font-color: "#ffffff"}
+
+lifecycle_start -> QUEUED: send() creates Notification
+QUEUED -> SENDING: worker picks up (service-driven)
+SENDING -> SENT: provider accepts the send (service-driven)
+SENDING -> FAILED: provider errors or times out (service-driven)
+SENT -> DELIVERED: provider webhook confirms delivery (provider-driven)
+SENT -> BOUNCED: provider webhook reports bounce (provider-driven)
+FAILED -> SENDING: retry, attempts < max (service-driven, backoff)
+FAILED -> DEAD_LETTERED: max attempts exhausted (service-driven)
+`} />
+
+The distinction interviewers probe: `QUEUED → SENDING` and
+`SENDING → FAILED` are **service-driven** — the worker itself decides
+these based on what the provider's synchronous response said.
+`SENT → DELIVERED` and `SENT → BOUNCED` are **provider-driven** — the
+provider accepted the message synchronously (`SENT`), and only a later
+asynchronous webhook says what actually happened at the recipient's
+end. `SENT` is "handed off successfully," not "arrived" — a real
+bounce (invalid mailbox, blocked number) can only be learned after the
+fact, which is exactly why `BOUNCED` branches off `SENT`, not off
+`SENDING`.
+
+The retry loop is a real back-edge, not a dangling terminal: `FAILED`
+returns to `SENDING` as long as `attemptCount < maxAttempts`, and only
+crosses into the terminal `DEAD_LETTERED` state once that cap is hit —
+covered as a named trade-off below, not silently implied.
+
+<QuizItem
+  question="A Notification is in SENT status. What's the difference between it moving to DELIVERED versus BOUNCED, and who triggers each transition?"
+  answer="Both are provider-driven — the notification service itself doesn't decide either outcome. DELIVERED means the provider's asynchronous webhook confirmed the message actually reached the recipient; BOUNCED means that same webhook reported a permanent delivery failure (invalid mailbox, blocked number) discovered after the provider had already accepted the send. Neither is knowable at the moment SENDING succeeds — that's why SENT is a distinct state from both."
+/>
+
+## Sequence diagram — send-with-failover flow
+
+{/* concept-dependency: LLD-03 not yet built, explained inline */}
+
+Trace one `send()` call through dedup, render, enqueue, a failing
+primary provider, and failover to a secondary.
+
+<D2Diagram title="send() with dedup, retry, and provider failover" type="sequence" chart={`
+shape: sequence_diagram
+
+Caller: {style.fill: "#3b6fd6"; style.font-color: "#ffffff"}
+NotificationService: {style.fill: "#0e7c86"; style.font-color: "#ffffff"}
+DedupStore: {style.fill: "#b8722a"; style.font-color: "#ffffff"}
+TemplateRenderer: {style.fill: "#0e7c86"; style.font-color: "#ffffff"}
+Queue: {style.fill: "#4b5262"; style.font-color: "#ffffff"}
+Worker: {style.fill: "#0e7c86"; style.font-color: "#ffffff"}
+EmailChannel: {style.fill: "#0e7c86"; style.font-color: "#ffffff"}
+PrimarySMTP: {style.fill: "#b8722a"; style.font-color: "#ffffff"}
+SecondarySMTP: {style.fill: "#b8722a"; style.font-color: "#ffffff"}
+
+Caller -> NotificationService: "send(idempotencyKey, template, [email])"
+NotificationService -> DedupStore: lookup(idempotencyKey)
+DedupStore -> NotificationService: not found, first time
+NotificationService -> TemplateRenderer: render(booking_confirmation, vars)
+TemplateRenderer -> NotificationService: RenderedMessage
+NotificationService -> DedupStore: reserve(idempotencyKey), Notification QUEUED
+NotificationService -> Queue: enqueue(notificationId)
+NotificationService -> Caller: accepted, notificationId
+Queue -> Worker: pop(notificationId)
+Worker -> Worker: note -- QUEUED -> SENDING
+Worker -> EmailChannel: send(message, recipient)
+EmailChannel -> PrimarySMTP: dispatch(message)
+PrimarySMTP -> EmailChannel: timeout
+EmailChannel -> PrimarySMTP: dispatch(message), attempt 2
+PrimarySMTP -> EmailChannel: timeout
+EmailChannel -> EmailChannel: note -- circuit breaker trips after 2 consecutive failures
+EmailChannel -> SecondarySMTP: dispatch(message)
+SecondarySMTP -> EmailChannel: 202 accepted
+EmailChannel -> Worker: DeliveryResult success
+Worker -> Worker: note -- SENDING -> SENT, provider = secondary
+`} />
+
+Two details worth calling out because they're easy to gloss over in
+prose:
+
+- The dedup check happens **before** enqueueing, as a real
+  cache/DB lookup (`DedupStore.lookup()`), not an implied "we check for
+  duplicates somewhere." A duplicate request never reaches the queue at
+  all.
+- `NotificationService.send()` returns to the caller **before** any
+  provider call happens — the caller gets "accepted" the instant the
+  request is deduped, rendered, and queued. Everything from `Worker`
+  onward runs asynchronously. This is the queue-and-worker trade-off
+  argued below made concrete in the sequence itself.
+
+<QuizItem
+  question="In the sequence diagram, why does DedupStore.lookup() happen before TemplateRenderer.render(), rather than rendering first and checking for duplicates right before enqueueing?"
+  answer="Rendering has a cost (template lookup, variable binding) that a duplicate request shouldn't pay — checking dedup first lets the service short-circuit a repeat request immediately, before doing any work that will be thrown away."
+/>
+
+## Database design (ER diagram)
+
+{/* concept-dependency: LLD-05 not yet built, explained inline */}
+
+<D2Diagram title="Notification service — schema" type="er" chart={`
+direction: right
+
+NOTIFICATION: {
+  shape: sql_table
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+  id: string {constraint: primary_key}
+  idempotency_key: string
+  channel: string
+  recipient: string
+  template_id: string {constraint: foreign_key}
+  rendered_payload: text
+  status: string
+  attempt_count: int
+  created_at: datetime
+}
+
+TEMPLATE: {
+  shape: sql_table
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+  id: string {constraint: primary_key}
+  channel: string
+  name: string
+  version: int
+  subject_template: text
+  body_template: text
+}
+
+DELIVERY_ATTEMPT: {
+  shape: sql_table
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+  id: string {constraint: primary_key}
+  notification_id: string {constraint: foreign_key}
+  attempt_number: int
+  provider: string
+  result: string
+  error_code: string
+  attempted_at: datetime
+}
+
+TEMPLATE.id -> NOTIFICATION.template_id: rendered from
+NOTIFICATION.id -> DELIVERY_ATTEMPT.notification_id: has history
+`} />
+
+Two indexes do the real mechanism work, not just described in prose:
+
+- **`UNIQUE INDEX` on `notification.idempotency_key`** — this is what
+  actually *enforces* dedup, not merely a description of "we check for
+  duplicates." A concurrent insert attempt with a key already present
+  fails at the database layer even if two workers raced past an
+  application-level check at the same instant — the constraint is the
+  backstop the in-flight-dedup deep dive below depends on.
+- **`notification(status, created_at)`** — a composite index matching
+  the retry worker's actual query: "find every `Notification` in
+  `FAILED` status older than the current backoff delay, to retry."
+  Without this index, that query is a full table scan every polling
+  cycle.
+
+**Template versioning matters for a subtle correctness reason.** A
+`Template` can be edited after a `Notification` that used it has
+already been rendered and sent — a typo fix, a rebrand, a legal-copy
+change. `notification.rendered_payload` stores the *frozen* rendered
+output at send time, rather than the service re-rendering from
+`template_id` whenever someone checks delivery status later. Without
+that, "what did we actually send this user" would answer with today's
+template content, not what was true when the message went out —
+wrong for support tickets, wrong for compliance/audit ("what exact
+wording did this user see").
+
+<QuizItem
+  question="A support agent looks up a notification sent three weeks ago to see its exact wording, but the template it used has since been edited. What does the query return, and why?"
+  answer="It returns notification.rendered_payload — the frozen copy captured at send time — not a fresh render from the (now-different) template. Re-rendering from template_id on read would show the agent today's wording, not what the recipient actually received three weeks ago."
+/>
+
+## Concept and mechanism deep dives
+
+### Retry policy
+
+- **Exponential backoff with jitter** — delay doubles each attempt
+  (1s, 2s, 4s, 8s...) with a random jitter factor added. Backoff alone
+  isn't enough: if every failed `Notification` targeting the same
+  down provider retries on the exact same schedule, they all hit the
+  provider again at the same instant it starts recovering — a
+  thundering herd that can knock it back down. Jitter spreads that
+  retry wave out.
+- **A bounded max-attempts cap** — not unlimited retry. Each
+  `Notification` tracks `attemptCount` against a per-channel max (e.g.
+  5 for email, 3 for SMS given its tighter latency budget).
+- **What happens at the cap**: `DEAD_LETTERED`, not a silent drop. The
+  notification stays queryable — a caller checking status sees an
+  explicit terminal failure, and ops has a dead-letter queue to
+  inspect and, if the root cause was transient (a provider outage that
+  outlasted the retry window), manually replay.
+
+### Dedup / idempotency
+
+- **Key source**: caller-supplied (this design's choice, see above) vs.
+  service-derived from a content hash. Caller-supplied wins because
+  business meaning ("this is booking 4821's confirmation") isn't
+  recoverable from hashing recipient+template+variables alone — two
+  distinct legitimate events can produce near-identical content.
+- **Where the check happens**: a fast-path cache check (e.g. Redis, keyed
+  on idempotency key) before ever touching the database, backed by the
+  `UNIQUE INDEX` on `notification.idempotency_key` as the actual
+  correctness guarantee. The cache is a latency optimization; the
+  database constraint is what makes duplicates structurally impossible
+  even if the cache is cold, evicted, or two requests race it.
+- **The in-flight case, easy to miss**: "duplicate" must be detected
+  even while the *first* attempt for that key is still being processed
+  — not just after it completes. If the dedup check only looked at
+  *completed* notifications, two near-simultaneous requests with the
+  same key could both pass the check (neither sees a completed row
+  yet) and both proceed to create a `Notification`. The fix is the same
+  unique constraint: `reserve(idempotencyKey)` inserts a placeholder
+  row (or claims a lock) at request time, before rendering finishes —
+  the second concurrent request's insert collides with the first's
+  placeholder and fails immediately, rather than racing to completion.
+
+<QuizItem
+  question="Two requests with the same idempotency key arrive 50ms apart, before the first has finished processing. Why doesn't a dedup check that only looks at 'completed' notifications catch the second one?"
+  answer="Because at the moment the second request runs its check, the first hasn't completed yet — there's no completed row to find, so both requests see 'not a duplicate' and proceed. The fix is reserving the key (inserting a placeholder row, guarded by the unique index) at request time rather than only recording completion, so the second request's insert collides with the first's reservation immediately."
+/>
+
+### Provider failover
+
+- **Circuit breaker trip condition**: N consecutive failures (or an
+  error-rate threshold over a rolling window) trips the breaker from
+  `PrimarySMTPProvider` to `SecondarySMTPProvider`, as shown in the
+  sequence diagram above.
+- **Half-open probing before fully trusting a recovered primary**: once
+  the breaker's cooldown elapses, it doesn't immediately resume
+  sending 100% of traffic to the primary — it sends a small probe
+  fraction through as a health check. Only after those probes succeed
+  does it fully reopen. Flipping straight back to full traffic risks
+  re-tripping on a provider that's only partially recovered.
+- **Failover isn't free**: the secondary provider may cost more per
+  message, have different deliverability characteristics (a secondary
+  SMTP relay's IP reputation may be worse, landing more mail in spam),
+  or have a different rate limit. Failover is a deliberate trade
+  against availability, not a costless swap — worth stating explicitly
+  rather than treating the secondary as an equivalent backup.
+
+### Channel abstraction extensibility
+
+Adding a new channel — WhatsApp, say — means: implement
+`NotificationChannel` (a `WhatsAppChannel` with its own `send()`),
+implement `Provider` for whatever vendor backs it, and register both
+with the factory below. Nothing in `NotificationService`, `EmailChannel`,
+`SMSChannel`, or `PushChannel` changes. That's the entire payoff of the
+Strategy pattern here — it's not implicit in the class diagram, it's
+the reason the class diagram is shaped the way it is.
+
+<QuizItem
+  question="Adding a WhatsApp channel requires touching how many existing classes, and why?"
+  answer="Zero existing NotificationChannel implementations or NotificationService itself — a new WhatsAppChannel class implements the interface and a factory registration wires it in. This is the direct payoff of the Strategy pattern: NotificationService depends on the NotificationChannel interface, never on a concrete channel, so a new implementation is purely additive."
+/>
+
+## Design patterns
+
+- **Strategy — `NotificationChannel`.** The primary pattern the whole
+  lesson hangs off: email/SMS/push are three interchangeable
+  implementations `NotificationService` depends on only through the
+  interface.
+- **Strategy (nested) — `Provider`.** A second, independent Strategy
+  inside each channel (primary/secondary vendor). It's separate from
+  the channel-level Strategy — not one combined abstraction — because
+  channel and provider vary on different axes and change for different
+  reasons (a new channel is a product decision; a provider swap is an
+  operational/reliability decision).
+- **Factory — `ChannelFactory` / `ProviderFactory`.** Resolves the
+  concrete `NotificationChannel` from a channel identifier and the
+  concrete `Provider` from a provider identifier, so `NotificationService`
+  and `EmailChannel` never `new` a concrete class directly. This is
+  also the seam the extensibility deep dive above depends on — a new
+  channel registers with the factory instead of any caller needing an
+  `if/else` branch.
+- **Template Method — `TemplateRenderer`.** Rendering is channel-shaped
+  (an email template has subject + HTML body; an SMS template is one
+  short string; a push template has title + body + a deep link) but
+  variable-binding itself — substituting `{{firstName}}` into
+  whichever fields a given channel's template defines — is identical
+  logic shared across all three. `TemplateRenderer` runs the shared
+  binding step and asks the channel-specific `Template` subtype only
+  for its own field shape.
+- **Circuit Breaker — wraps each `Provider` call.** Trips on repeated
+  failure (the provider-failover deep dive above), protecting the
+  retry loop from continuing to hammer a fully-down provider. This is
+  not a separate, unrelated pattern from retry policy — the breaker is
+  what stops *blind* retrying from becoming *harmful* retrying: without
+  it, a bounded-attempts retry loop would still burn all of its
+  attempts hammering a provider that's obviously down, instead of
+  failing over after the first couple of failures.
+- **Observer (extension point, not core) — status-change events.** When
+  a `Notification` transitions status, interested services could
+  subscribe (e.g. Ticketmaster's booking service wants to know
+  "booking confirmation #4821 delivered" without polling
+  `getStatus()`). Not built out in this lesson, but worth naming as
+  where that hook would live.
+
+<QuizItem
+  question="Why is Circuit Breaker described as connected to the retry policy rather than as an independent pattern?"
+  answer="Because bounded-attempts retry alone doesn't stop a worker from spending every one of its attempts hammering a provider that's clearly down — the circuit breaker is what changes 'retry the same dead provider N times' into 'retry twice, then fail over,' making the retry loop's attempts actually productive instead of wasted on a provider known to be failing."
+/>
+
+## Trade-offs
+
+- **Queue-and-worker send (chosen) vs. synchronous send.** A caller
+  blocking on `send()` until the provider responds is simpler to
+  reason about, but couples the caller's own latency to a provider's
+  worst case — an SMTP relay having a slow minute would stall every
+  caller that happens to be sending email at that moment. Given this
+  system's NFRs (email tolerates seconds-to-low-minutes; the caller
+  should never be blocked by provider slowness), queue-and-worker
+  wins: `send()` returns "accepted" the moment the request is deduped
+  and enqueued, and actual dispatch — including retries and failover —
+  happens asynchronously. The cost is that the caller no longer learns
+  the final outcome synchronously and must poll `getStatus()` or
+  subscribe to the Observer hook above.
+- **Per-channel rate limiting (chosen) vs. one global limiter.** A
+  single global rate limiter is simpler to implement, but a slow or
+  throttled SMS provider would eat into the shared budget and throttle
+  unrelated email sends that have nothing to do with the SMS provider's
+  problem. Per-channel limits (each channel's worker pool respects its
+  own provider's rate/cost budget independently) isolate that failure
+  — an SMS provider having a bad day doesn't touch email throughput.
+- **Dead-letter after max retries (chosen) vs. retrying indefinitely.**
+  Bounded retry protects the queue from being permanently clogged by a
+  recipient that can never succeed (a typo'd email address, a
+  disconnected phone number) — an indefinitely-retried notification to
+  a dead address would occupy worker capacity forever. The cost: a
+  genuine transient outage that outlasts the retry window (say, a
+  provider down for an hour when the retry window covers 15 minutes)
+  exhausts attempts and dead-letters a notification that would have
+  succeeded on attempt 6 if retries hadn't stopped at 5 — ops has to
+  notice the dead-letter queue and manually replay in that case.
+- **Storing the rendered payload (chosen) vs. re-rendering on read.**
+  Storing costs disk space per notification (the full rendered
+  subject/body, not just a template reference). Re-rendering on read
+  costs correctness the moment a template changes after send — a
+  status check or support lookup would show today's template content
+  instead of what the recipient actually received, per the database
+  design note above. Storage is cheap; a wrong audit answer isn't.
+
+## Worked example
+
+Ticketmaster's booking service confirms a purchase and calls
+`NotificationService.send()` with idempotency key
+`booking-4821-confirmed`, template `booking_confirmation`, channels
+`[email, push]`.
+
+<D2Diagram title="Worked example — booking confirmation, first request" type="sequence" chart={`
+shape: sequence_diagram
+
+BookingService: {style.fill: "#3b6fd6"; style.font-color: "#ffffff"}
+NotificationService: {style.fill: "#0e7c86"; style.font-color: "#ffffff"}
+EmailWorker: {style.fill: "#0e7c86"; style.font-color: "#ffffff"}
+PushWorker: {style.fill: "#0e7c86"; style.font-color: "#ffffff"}
+PrimarySMTP: {style.fill: "#b8722a"; style.font-color: "#ffffff"}
+SecondarySMTP: {style.fill: "#b8722a"; style.font-color: "#ffffff"}
+FCM: {style.fill: "#b8722a"; style.font-color: "#ffffff"}
+
+BookingService -> NotificationService: "send(booking-4821-confirmed, [email, push])"
+NotificationService -> NotificationService: note -- dedup check passes, first time
+NotificationService -> NotificationService: note -- creates 2 Notification rows, both QUEUED
+NotificationService -> BookingService: accepted
+NotificationService -> EmailWorker: enqueue email notification
+NotificationService -> PushWorker: enqueue push notification
+EmailWorker -> PrimarySMTP: send()
+PrimarySMTP -> EmailWorker: timeout (x2, breaker trips)
+EmailWorker -> SecondarySMTP: send()
+SecondarySMTP -> EmailWorker: 202 accepted, status -> SENT
+PushWorker -> FCM: send()
+FCM -> PushWorker: success, status -> SENT
+SecondarySMTP -> EmailWorker: webhook: DELIVERED
+`} />
+
+Email fails over exactly as traced in the sequence diagram above —
+primary times out twice, the breaker trips, secondary succeeds, and a
+later webhook confirms `DELIVERED`. Push succeeds on the first attempt
+via FCM with no failover needed — the two `Notification` rows created
+from one request have entirely independent outcomes, which is exactly
+why they're modeled as two rows and not one.
+
+Ten seconds later, the booking service's own network has a blip and it
+retries its call to the notification service — same idempotency key,
+`booking-4821-confirmed`, same channels.
+
+<D2Diagram title="Worked example — caller retry hits dedup" type="sequence" chart={`
+shape: sequence_diagram
+
+BookingService: {style.fill: "#3b6fd6"; style.font-color: "#ffffff"}
+NotificationService: {style.fill: "#0e7c86"; style.font-color: "#ffffff"}
+DedupStore: {style.fill: "#b8722a"; style.font-color: "#ffffff"}
+
+BookingService -> NotificationService: "send(booking-4821-confirmed, [email, push])"
+NotificationService -> DedupStore: lookup(booking-4821-confirmed)
+DedupStore -> NotificationService: found, 2 existing Notification rows
+NotificationService -> BookingService: existing status returned, no new rows created
+`} />
+
+No new send happens, no new row is created, and the caller gets back
+the status of the two notifications that already exist — exactly the
+dedup guarantee stated as a requirement earlier, now traced concretely
+instead of merely asserted.
+
+## Interview angle
+
+**"How do you prevent a burst of duplicate sends when the calling
+service itself retries the HTTP request to you?"** The idempotency key
+is the mechanism, and the in-flight case is the part worth stating
+explicitly: the dedup check isn't "does a completed notification with
+this key exist" but "does *any* row — including one still `QUEUED` or
+`SENDING` — already claim this key," enforced by the unique index at
+request time, not after completion.
+
+**"A provider is up but slow — not erroring. Does your circuit breaker
+catch this, and should it?"** A pure failure-count breaker (trip after
+N *errors*) misses this: a provider returning 200s slowly never counts
+as a failure. A latency-aware breaker — trip on error rate *or* on
+p99/p95 latency crossing a threshold — catches it. Whether it should
+depends on the channel's latency NFR: an SMS provider silently slowing
+past a 5-second budget is effectively broken for this system's
+purposes even though it's technically "up," so yes, worth wiring
+latency into the trip condition for latency-sensitive channels.
+
+**"How would you add a new channel (WhatsApp) without touching any
+existing channel's code?"** Per the extensibility deep dive above:
+implement `NotificationChannel` and `Provider` for WhatsApp, register
+both with the factory. Zero changes to `NotificationService`,
+`EmailChannel`, `SMSChannel`, or `PushChannel`.
+
+**"How do you avoid retry storms across many notifications when a
+provider goes down all at once?"** Backoff jitter and circuit breaker
+acting *together*, not either alone. Jitter alone still lets every
+in-flight notification independently discover the provider is down and
+retry on its own schedule — a circuit breaker shared across
+notifications targeting the same provider stops that discovery from
+happening per-notification: once it trips, every notification queued
+for that provider fails over or waits on the shared breaker state
+instead of each one individually re-learning "still down" the hard
+way.
+
+## Practice & Self-Check
+
+### Recap quiz
+
+<QuizItem
+  question="Why is NotificationChannel modeled as a Strategy interface instead of an if/else on a channel type field inside NotificationService?"
+  answer="An if/else means every new channel edits NotificationService's internals and every existing branch is a place a bug in one channel's logic can leak into another's code path. A Strategy interface means NotificationService depends only on send(), and a new channel is a purely additive class registered with a factory — no existing code changes."
+/>
+
+<QuizItem
+  question="Why does the uniqueness constraint on idempotency_key need to live at the database layer, not just as an application-level check before insert?"
+  answer="An application-level check ('does a row with this key exist?') can race: two concurrent requests can both see 'not found' before either has committed its insert. A database-level unique constraint makes the second insert fail atomically no matter how close together the two requests arrive, which an app-level check alone can't guarantee."
+/>
+
+<QuizItem
+  question="What distinguishes a Notification ending in FAILED from one ending in BOUNCED?"
+  answer="FAILED is service-driven and transient/retry-eligible — the worker itself couldn't complete the send (timeout, provider error) and the notification can retry. BOUNCED is provider-driven and permanent — the provider had already accepted the send (status was SENT) and only later, via an asynchronous webhook, reported that delivery actually failed at the recipient's end (invalid mailbox, blocked number)."
+/>
+
+<QuizItem
+  question="Why does exponential backoff need jitter added, rather than a clean doubling delay being enough on its own?"
+  answer="Without jitter, every notification retrying against the same down provider follows the identical schedule, so they all hit the provider again at the same instant — a thundering herd that can knock a recovering provider back down right as it starts to come back. Jitter randomizes each notification's exact retry moment so the reload is spread out instead of synchronized."
+/>
+
+<QuizItem
+  question="Why is Provider a separate abstraction from NotificationChannel rather than one combined enum like EMAIL_VIA_SENDGRID?"
+  answer="Channel and provider change for different reasons and on different schedules — a new channel is a product decision, a provider swap (failover, or switching vendors) is an operational one. Keeping them separate means a failover event only ever touches which Provider a channel is using, never the channel abstraction itself."
+/>
+
+<QuizItem
+  question="Booking service B sends two requests with the same idempotency key 50ms apart, before the first has finished processing. What stops both from creating a Notification?"
+  answer="The dedup check reserves the key at request time (before rendering completes), guarded by the unique index on idempotency_key — so the second request's attempt to claim the same key collides with the first's already-in-progress reservation and fails, rather than both requests seeing 'no completed row yet' and proceeding independently."
+/>
+
+<QuizItem
+  question="Why does the database store notification.rendered_payload instead of re-rendering from the template whenever someone checks a notification's status?"
+  answer="A Template can be edited after a Notification using it was already sent. Storing the frozen rendered payload preserves what the recipient actually received; re-rendering on read would show whatever the template looks like today, which is wrong for support lookups and audit/compliance questions about a specific past send."
+/>
+
+### Open design challenge
+
+Add a new push-notification sub-channel — WhatsApp Business messages —
+without modifying `NotificationService`, any existing
+`NotificationChannel` implementation, or the retry/circuit-breaker
+infrastructure. Identify every class you add versus every class you
+touch, and name the one shared piece of infrastructure (retry policy,
+circuit breaker, dedup check) that must keep working unmodified for the
+new channel to be a genuine drop-in.
+
+<details>
+<summary>Reference answer (try the design yourself first)</summary>
+
+**Classes added:** a `WhatsAppChannel` implementing `NotificationChannel`
+(its own `send()`, calling into a WhatsApp-specific `Provider`), a
+`WhatsAppBusinessProvider` implementing `Provider`, and a
+`WhatsAppTemplate` (or a channel-tagged row in the existing `Template`
+table with `channel = "whatsapp"`, if `Template`'s existing
+subject/body-template shape is generic enough — WhatsApp Business
+templates are pre-approved by Meta and closer in shape to SMS's
+single-string body than email's subject+HTML, so it likely reuses
+`Template`'s body-only fields rather than needing a new class).
+
+**Classes touched:** none of `NotificationService`, `EmailChannel`,
+`SMSChannel`, `PushChannel`, `TemplateRenderer`, `DeliveryAttempt`, or
+the retry/circuit-breaker wrapper. The only "touch" is additive
+registration: `ChannelFactory` and `ProviderFactory` get one new
+mapping entry each (`"whatsapp" → WhatsAppChannel`,
+`"whatsapp_business" → WhatsAppBusinessProvider`), which is
+configuration-shaped, not a code change to existing behavior.
+
+**The shared infrastructure that must keep working unmodified:** the
+circuit breaker wrapping `Provider.dispatch()` calls and the retry
+policy driving `Notification`'s `FAILED → SENDING` back-edge both
+operate on the `Provider` interface generically — they have no
+channel-specific logic in them at all. `WhatsAppBusinessProvider`
+inherits circuit-breaker protection and retry/backoff for free simply
+by implementing `Provider`, the same way `SecondarySMTPProvider` does.
+The dedup check operates purely on `idempotencyKey` and is entirely
+channel-agnostic — it never looks at which channel a `Notification`
+targets, so a WhatsApp notification is deduped by exactly the same
+mechanism as an email one.
+
+</details>
+
+<Rubric
+  items={[
+    "Added a new NotificationChannel implementation (WhatsAppChannel) instead of branching WhatsApp logic into an existing channel's send() method",
+    "Registered the new channel and provider via the factory instead of introducing a new caller-side switch/if-else",
+    "Left retry policy, circuit breaker, and dedup check completely unmodified, and explained why — they operate on the Provider interface and idempotency key generically, not on channel-specific logic",
+    "Addressed the template-shape question for WhatsApp (reused Template's existing fields vs. needed a new class) rather than skipping template handling entirely",
+    "Named NotificationService as untouched and explained why — it depends only on the NotificationChannel interface, never on a concrete channel list",
+  ]}
+/>
