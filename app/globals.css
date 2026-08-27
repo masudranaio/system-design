@@ -1,4 +1,3 @@
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap");
 @import "tailwindcss";
 
 :root {
@@ -144,24 +143,24 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-serif), Georgia, "Times New Roman", serif;
-  font-size: 1.09375rem;
-  line-height: 1.7;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: 1.0625rem;
+  line-height: 1.75;
+  -webkit-font-smoothing: antialiased;
 }
 
 .panel-breakout {
   width: 100%;
 }
 
-h1,
-h2,
-h3,
-h4,
-h5,
-h6,
-.font-mono {
-  font-family: var(--font-mono), ui-monospace, "SFMono-Regular", monospace;
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display), ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: -0.011em;
   text-wrap: balance;
+}
+
+.font-mono, code, kbd {
+  font-family: var(--font-mono), ui-monospace, "SFMono-Regular", monospace;
 }
 
 @media (prefers-reduced-motion: no-preference) {

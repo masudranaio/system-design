@@ -1,20 +1,28 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Mono, Source_Serif_4 } from "next/font/google";
+import { Archivo, IBM_Plex_Mono, Source_Sans_3 } from "next/font/google";
 import { ThemeProvider } from "@/components/nav/theme-provider";
 import { TopBar } from "@/components/nav/TopBar";
 import { Sidebar } from "@/components/nav/Sidebar";
 import "./globals.css";
 
+const archivo = Archivo({
+  subsets: ["latin"],
+  weight: ["600", "700"],
+  variable: "--font-display",
+  display: "swap",
+});
+
+const sourceSans = Source_Sans_3({
+  subsets: ["latin"],
+  weight: ["400", "600"],
+  variable: "--font-sans",
+  display: "swap",
+});
+
 const plexMono = IBM_Plex_Mono({
   subsets: ["latin"],
   weight: ["500", "600"],
   variable: "--font-mono",
-  display: "swap",
-});
-
-const sourceSerif = Source_Serif_4({
-  subsets: ["latin"],
-  variable: "--font-serif",
   display: "swap",
 });
 
@@ -33,7 +41,7 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${plexMono.variable} ${sourceSerif.variable}`}
+      className={`${archivo.variable} ${sourceSans.variable} ${plexMono.variable}`}
     >
       <body>
         <ThemeProvider attribute="data-theme" defaultTheme="system" enableSystem>
