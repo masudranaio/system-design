@@ -33,9 +33,8 @@ this lesson is one facility — a single `ParkingLot` instance with its
 own levels, spots, and gates. Coordinating *many* facilities (a phone
 app showing nearby availability across a whole city) is a different
 problem with a different bottleneck — that's the
-[HLD companion lesson](/case-studies/parking-lot/hld) once it exists,
-and it's why this lesson never worries about network partitions or
-geospatial search.
+[HLD companion lesson](/case-studies/parking-lot/hld), and it's why this
+lesson never worries about network partitions or geospatial search.
 
 <QuizItem
   question="Why does a strong LLD answer start with clarifying questions instead of a class diagram?"
@@ -48,27 +47,30 @@ Translate the functional requirements into nouns, then ask which nouns
 need their own behavior and which are just data on another noun's
 behavior.
 
-**Nouns that become classes:** `ParkingLot`, `Level`, `Spot`, `Vehicle`
-(and its subtypes), `Ticket`, `EntryGate`/`ExitGate`, `Payment`, and one
-optional observer, `DisplayBoard`.
-
-**Nouns that don't:** a parking *fee* is not an entity — it's a number
-computed by a `PricingStrategy` from a ticket's duration and vehicle
-type. Modeling "Fee" as its own class with no independent lifecycle is
-the classic over-modeling mistake in this problem: every extra class is
-another thing to keep in sync, so a noun only earns a class when it has
-its own identity and state, not just a value that another object owns.
+- **Nouns that become classes:** `ParkingLot`, `Level`, `Spot`,
+  `Vehicle` (and its subtypes), `Ticket`, `EntryGate`/`ExitGate`,
+  `Payment`, and one optional observer, `DisplayBoard`.
+- **Nouns that don't:** a parking *fee* is not an entity — it's a
+  number computed by a `PricingStrategy` from a ticket's duration and
+  vehicle type. Modeling "Fee" as its own class with no independent
+  lifecycle is the classic over-modeling mistake in this problem: every
+  extra class is another thing to keep in sync, so a noun only earns a
+  class when it has its own identity and state, not just a value
+  another object owns.
 
 {/* concept-dependency: LLD-02 not yet built, explained inline */}
 Deciding *how* two classes relate matters as much as deciding *that*
-they relate. Three relationship strengths show up here: **composition**
-(a `Level` cannot outlive its `ParkingLot` — delete the lot, its levels
-go with it), **association** (a `Ticket` references a `Vehicle` and a
-`Spot`, but neither owns the other — closing a ticket doesn't destroy
-the vehicle), and **dependency** (a `Gate` calls into `ParkingLot`'s
-allocation methods without holding a permanent reference to any one
-`Spot`). Getting this right up front avoids a design where deleting one
-object accidentally cascades into deleting objects it merely referenced.
+they relate. Three relationship strengths show up here:
+
+- **Composition** — a `Level` cannot outlive its `ParkingLot`; delete
+  the lot, its levels go with it.
+- **Association** — a `Ticket` references a `Vehicle` and a `Spot`, but
+  neither owns the other; closing a ticket doesn't destroy the vehicle.
+- **Dependency** — a `Gate` calls into `ParkingLot`'s allocation
+  methods without holding a permanent reference to any one `Spot`.
+
+Getting this right up front avoids a design where deleting one object
+accidentally cascades into deleting objects it merely referenced.
 
 The cardinalities for this lot:
 
@@ -102,120 +104,156 @@ size class upward, not just look for "any free spot."
 {/* concept-dependency: LLD-04 not yet built, explained inline */}
 A UML class diagram is the map of this design: boxes are classes with
 their fields and methods, and the lines between them are the
-relationships just decided above — a filled diamond for composition, an
-open diamond for aggregation, a plain arrow for association, and a
-dashed arrow for a dependency that doesn't hold a lasting reference.
+relationships just decided above. This design splits into three
+diagrams by concern instead of one dense diagram — structure,
+inheritance, and injected behavior are three different things an
+interviewer probes separately.
 
-<DiagramPanel title="Parking lot object model" type="class" chart={`
-classDiagram
-  class ParkingLot {
-    -id: string
-    -name: string
-    -address: string
-    -levels: List~Level~
-    -entryGates: List~EntryGate~
-    -exitGates: List~ExitGate~
-    +parkVehicle(vehicle: Vehicle) Ticket
-    +unparkVehicle(ticket: Ticket) Payment
-  }
-  class Level {
-    -floorNumber: int
-    -spots: List~Spot~
-    +findAvailableSpot(type: SpotType) Spot
-  }
-  class Spot {
-    -id: string
-    -type: SpotType
-    -status: SpotStatus
-    -occupiedBy: Vehicle
-    +assign(vehicle: Vehicle) bool
-    +release() void
-  }
-  class SpotType {
-    <<enumeration>>
-    MOTORCYCLE
-    COMPACT
-    LARGE
-  }
-  class Vehicle {
-    <<abstract>>
-    -licensePlate: string
-    -size: SpotType
-  }
-  class Motorcycle
-  class Car
-  class Bus
-  Vehicle <|-- Motorcycle
-  Vehicle <|-- Car
-  Vehicle <|-- Bus
-  class Ticket {
-    -id: string
-    -vehicle: Vehicle
-    -spot: Spot
-    -entryTime: DateTime
-    -exitTime: DateTime
-    -status: TicketStatus
-  }
-  class EntryGate {
-    -id: string
-    +issueTicket(vehicle: Vehicle) Ticket
-  }
-  class ExitGate {
-    -id: string
-    +processExit(ticket: Ticket) Payment
-  }
-  class SpotAssignmentStrategy {
-    <<interface>>
-    +findSpot(level: Level, type: SpotType) Spot
-  }
-  class PricingStrategy {
-    <<interface>>
-    +calculateFee(ticket: Ticket) decimal
-  }
-  class Payment {
-    -id: string
-    -ticket: Ticket
-    -method: string
-    -amount: decimal
-    -paidAt: DateTime
-  }
-  class DisplayBoard {
-    +onOccupancyChanged(level: Level, freeCount: int) void
-  }
+### A. Core domain classes
 
-  ParkingLot "1" *-- "many" Level : composition
-  Level "1" *-- "many" Spot : composition
-  ParkingLot "1" o-- "many" EntryGate : composition
-  ParkingLot "1" o-- "many" ExitGate : composition
-  Ticket "1" --> "1" Vehicle : association
-  Ticket "1" --> "1" Spot : association
-  Ticket "1" --> "0..1" Payment : association
-  EntryGate ..> ParkingLot : depends on
-  ExitGate ..> ParkingLot : depends on
-  ParkingLot ..> SpotAssignmentStrategy : uses (injected)
-  ParkingLot ..> PricingStrategy : uses (injected)
-  ParkingLot ..> DisplayBoard : notifies
+<D2Diagram title="Parking lot core domain model" type="class" chart={`
+ParkingLot: {
+  shape: class
+  -id: string
+  -name: string
+  -address: string
+  -levels: Level[]
+  -entryGates: EntryGate[]
+  -exitGates: ExitGate[]
+  +parkVehicle(vehicle: Vehicle): Ticket
+  +unparkVehicle(ticket: Ticket): Payment
+}
+Level: {
+  shape: class
+  -floorNumber: int
+  -spots: Spot[]
+  +findAvailableSpot(type: SpotType): Spot
+}
+Spot: {
+  shape: class
+  -id: string
+  -type: SpotType
+  -status: SpotStatus
+  -occupiedBy: Vehicle
+  +assign(vehicle: Vehicle): bool
+  +release(): void
+}
+Ticket: {
+  shape: class
+  -id: string
+  -vehicle: Vehicle
+  -spot: Spot
+  -entryTime: DateTime
+  -exitTime: DateTime
+  -status: TicketStatus
+}
+EntryGate: {
+  shape: class
+  -id: string
+  +issueTicket(vehicle: Vehicle): Ticket
+}
+ExitGate: {
+  shape: class
+  -id: string
+  +processExit(ticket: Ticket): Payment
+}
+
+ParkingLot -> Level: "composition (1 -> many)"
+Level -> Spot: "composition (1 -> many)"
+ParkingLot -> EntryGate: "composition (1 -> many)"
+ParkingLot -> ExitGate: "composition (1 -> many)"
+Ticket -> Vehicle: "association"
+Ticket -> Spot: "association"
+EntryGate -> ParkingLot: "depends on"
+ExitGate -> ParkingLot: "depends on"
 `} />
 
-*Read this as: `ParkingLot` owns its levels and gates outright
-(composition — they don't exist independently), while a `Ticket`
-merely points at a `Vehicle` and a `Spot` it doesn't own (association —
-closing the ticket doesn't delete either). `SpotAssignmentStrategy` and
-`PricingStrategy` are dashed dependencies deliberately, not fields
-`ParkingLot` constructs itself — that's the Strategy pattern, covered
-next.*
-
-`EntryGate.issueTicket()` is the entry hot path: it calls into
-`ParkingLot.parkVehicle()`, which asks a `Level` for a compatible free
-`Spot` via the injected `SpotAssignmentStrategy`, flips that spot to
-occupied, and creates the `Ticket`. `ExitGate.processExit()` is the
-reverse: validate the ticket, ask the injected `PricingStrategy` for
-the fee, record a `Payment`, release the spot, close the ticket.
+*`ParkingLot` owns its levels and gates outright (composition — they
+don't exist independently), while a `Ticket` merely points at a
+`Vehicle` and a `Spot` it doesn't own (association — closing the ticket
+doesn't delete either). `EntryGate.issueTicket()` is the entry hot
+path: it calls into `ParkingLot.parkVehicle()`, which asks a `Level`
+for a compatible free `Spot`, flips that spot to occupied, and creates
+the `Ticket`. `ExitGate.processExit()` is the reverse: validate the
+ticket, compute the fee, record a `Payment`, release the spot, close
+the ticket.*
 
 <QuizItem
   question="Why is Ticket → Spot modeled as an association instead of composition, given that Level → Spot is composition?"
   answer="A Spot has its own lifecycle independent of any one ticket — it exists before a vehicle arrives and after it leaves, and outlives thousands of tickets over its life. Composition would wrongly imply the spot is destroyed when the ticket closes."
 />
+
+### B. Vehicle hierarchy
+
+<D2Diagram title="Vehicle subtypes and their factory" type="class" chart={`
+direction: right
+Vehicle: {
+  shape: class
+  -licensePlate: string
+  -size: SpotType
+}
+Motorcycle: {
+  shape: class
+}
+Car: {
+  shape: class
+}
+Bus: {
+  shape: class
+}
+VehicleFactory: {
+  shape: class
+  +create(plate: string, sizeHint: SpotType): Vehicle
+}
+Vehicle <- Motorcycle: "extends"
+Vehicle <- Car: "extends"
+Vehicle <- Bus: "extends"
+VehicleFactory -> Vehicle: "constructs"
+`} />
+
+*`SpotType` (`MOTORCYCLE`/`COMPACT`/`LARGE`) is an enum shared with
+`Spot`, reused here as each vehicle's own size class. `VehicleFactory`
+is what a gate's sensor input turns into a typed object — see the
+Factory pattern below.*
+
+### C. Strategy and Observer collaborators
+
+<D2Diagram title="Injected strategies and the occupancy observer" type="class" chart={`
+ParkingLot: {
+  shape: class
+}
+SpotAssignmentStrategy: {
+  shape: class
+  +findSpot(level: Level, type: SpotType): Spot
+}
+PricingStrategy: {
+  shape: class
+  +calculateFee(ticket: Ticket): decimal
+}
+Payment: {
+  shape: class
+  -id: string
+  -ticket: Ticket
+  -method: string
+  -amount: decimal
+  -paidAt: DateTime
+}
+DisplayBoard: {
+  shape: class
+  +onOccupancyChanged(level: Level, freeCount: int): void
+}
+
+ParkingLot -> SpotAssignmentStrategy: "uses (injected interface)" {style.stroke-dash: 4}
+ParkingLot -> PricingStrategy: "uses (injected interface)" {style.stroke-dash: 4}
+ParkingLot -> Payment: "creates"
+ParkingLot -> DisplayBoard: "notifies" {style.stroke-dash: 4}
+`} />
+
+*`SpotAssignmentStrategy` and `PricingStrategy` are dashed dependencies
+deliberately, not fields `ParkingLot` constructs itself — that's the
+Strategy pattern, covered next. `DisplayBoard` is dashed for the same
+reason: it's a subscriber `ParkingLot` calls out to, not a component it
+owns.*
 
 ## State machines
 
@@ -227,14 +265,13 @@ candidates forget, and they're exactly what an interviewer probes for.
 
 ### Spot lifecycle
 
-<DiagramPanel title="Spot state machine" type="state" chart={`
-stateDiagram-v2
-  [*] --> AVAILABLE
-  AVAILABLE --> RESERVED : reservation placed (extension, not base scope)
-  RESERVED --> AVAILABLE : reservation expires or is cancelled
-  RESERVED --> OCCUPIED : reserving vehicle arrives, checks in
-  AVAILABLE --> OCCUPIED : vehicle enters, spot assigned (atomic CAS)
-  OCCUPIED --> AVAILABLE : vehicle exits, fee settled, spot released
+<D2Diagram title="Spot state machine" type="state" chart={`
+direction: right
+AVAILABLE -> RESERVED: "reservation placed\\n(extension, not base scope)"
+RESERVED -> AVAILABLE: "reservation expires\\nor is cancelled"
+RESERVED -> OCCUPIED: "reserving vehicle\\narrives, checks in"
+AVAILABLE -> OCCUPIED: "vehicle enters,\\nspot assigned (atomic CAS)"
+OCCUPIED -> AVAILABLE: "vehicle exits, fee\\nsettled, spot released"
 `} />
 
 `RESERVED` is drawn in even though this lesson's base scope has no
@@ -245,36 +282,42 @@ worth stating out loud in an interview.
 
 ### Ticket lifecycle
 
-<DiagramPanel title="Ticket state machine" type="state" chart={`
-stateDiagram-v2
-  [*] --> ISSUED : EntryGate creates ticket, spot assigned
-  ISSUED --> PAID : valid ticket presented, fee collected, spot released
-  ISSUED --> LOST : driver reports the physical ticket lost
-  LOST --> PAID : flat lost-ticket penalty charged, spot released
-  PAID --> [*] : ticket archived
-  PAID --> REJECTED : same ticket ID presented again at any gate
-  REJECTED --> [*] : exit denied, no state change, security alerted
-  [*] --> REJECTED : unrecognized or forged ticket ID presented
+<D2Diagram title="Ticket state machine" type="state" chart={`
+direction: right
+ISSUED -> PAID: "valid ticket presented,\\nfee collected, spot released"
+ISSUED -> LOST: "driver reports the\\nphysical ticket lost"
+LOST -> PAID: "flat lost-ticket\\npenalty charged, spot released"
+PAID -> REJECTED: "same ticket ID\\npresented again at any gate"
+UNKNOWN_ID -> REJECTED: "unrecognized or\\nforged ticket ID presented"
 `} />
 
 `REJECTED` is a dead end reachable from two different starting points —
 a used-up `PAID` ticket presented again, or a ticket ID that never
-existed. Both must produce the same outward behavior (deny exit, spot
-untouched) without mutating any real ticket's state, which is why
-`REJECTED` isn't a status stored on a `Ticket` row at all — it's the
-outcome when `ExitGate` fails to find an `ISSUED` or `LOST` ticket
-matching the presented ID.
+existed (drawn above as `UNKNOWN_ID`, a stand-in for "no matching row,"
+not a real stored state). Both must produce the same outward behavior
+(deny exit, spot untouched) without mutating any real ticket's state,
+which is why `REJECTED` isn't a status stored on a `Ticket` row at all —
+it's the outcome when `ExitGate` fails to find an `ISSUED` or `LOST`
+ticket matching the presented ID.
 
+<Point icon="lock">
 The transition that matters most for correctness is `ISSUED → PAID`:
 it isn't really one transition, it's two that must succeed or fail
 together — `Spot.status: OCCUPIED → AVAILABLE` and
-`Ticket.status: ISSUED → PAID`. Flip the spot free without closing the
-ticket and a second vehicle can be assigned that spot while the first
-vehicle's ticket still claims it's parked. Close the ticket without
-freeing the spot and the spot stays permanently unavailable — an
-orphaned "occupied" spot, exactly the bug the non-functional
-requirements call out. This pair must be updated in one atomic unit of
-work, not two separate calls.
+`Ticket.status: ISSUED → PAID`.
+</Point>
+<Point icon="shield">
+Flip the spot free without closing the ticket and a second vehicle can
+be assigned that spot while the first vehicle's ticket still claims
+it's parked. Close the ticket without freeing the spot and the spot
+stays permanently unavailable — an orphaned "occupied" spot, exactly
+the bug the non-functional requirements call out.
+</Point>
+<Point icon="branch">
+This pair must be updated in one atomic unit of work, not two separate
+calls — the same principle the concurrency deep dive below applies to
+spot assignment.
+</Point>
 
 <QuizItem
   question="A driver's ticket is scanned twice at the same exit gate two seconds apart (a network retry resent the request). What should happen the second time?"
@@ -291,34 +334,78 @@ singular: one facility, one instance holding the canonical list of
 levels and gates. The textbook answer wraps this in a Singleton (a
 class that hard-codes "there will only ever be one instance of me" via
 a private constructor and a static accessor) so nothing accidentally
-constructs a second, out-of-sync lot. The trade-off, and worth stating
-in an interview: a hard-coded Singleton makes unit tests harder — every
-test that touches `ParkingLot` shares the same global instance unless
-you add a reset hook — and it doesn't scale to "what if this codebase
-later runs two lots in one process." Dependency injection (construct
-one `ParkingLot` instance in a composition root, hand it to every gate
-that needs it) gets the same "exactly one instance in practice"
-outcome without baking the constraint into the class itself, at the
-cost of the caller now being responsible for not constructing a second
-one. Either answer is acceptable if you name why you picked it.
+constructs a second, out-of-sync lot.
+
+<CompareTable
+  title="Singleton vs. dependency-injected ParkingLot"
+  rows={[
+    {
+      approach: "Singleton",
+      pros: ["Matches the real constraint (\"exactly one lot\") directly in the type system", "Nothing can accidentally construct a second, out-of-sync instance"],
+      cons: ["Every test that touches ParkingLot shares one global instance unless a reset hook is added", "Doesn't scale to \"what if this codebase later runs two lots in one process\""],
+    },
+    {
+      approach: "Dependency injection",
+      pros: ["Same \"exactly one in practice\" outcome without baking the constraint into the class", "Trivially testable — construct a fresh instance per test"],
+      cons: ["The caller (composition root) is now responsible for not constructing a second one — a convention, not a guarantee"],
+      chosenBecause: "Either answer is acceptable if you name the trade-off; this lesson's worked example assumes DI for testability.",
+    },
+  ]}
+/>
 
 **Strategy, twice.** This problem's signature move is that *two*
-independent decisions are each swappable behavior, not one:
+independent decisions are each swappable behavior, not one. Both are
+injected into `ParkingLot` as interfaces rather than hardcoded as
+methods on `ParkingLot` itself — swapping the pricing model for a
+holiday surge rate shouldn't require touching `Ticket`, `Gate`, or the
+assignment logic at all, only the one class that implements
+`PricingStrategy`. Recognizing that this problem needs Strategy in
+*two unrelated places* is the detail that separates a strong answer
+from an adequate one.
 
-- `SpotAssignmentStrategy` picks which free spot a vehicle gets —
-  nearest-to-entrance-first, best-fit (smallest compatible spot,
-  minimizing waste), or level-balancing (spread load so no one level
-  fills first).
-- `PricingStrategy` computes the fee from a ticket's duration and
-  vehicle type — flat-rate, tiered-by-hour, or time-of-day surge.
+<CompareTable
+  title="SpotAssignmentStrategy — which free spot does a vehicle get"
+  rows={[
+    {
+      approach: "Nearest-first",
+      pros: ["Single cheap query: first free spot closest to the entrance", "Best walk time for the driver"],
+      cons: ["Ignores size-class waste — a motorcycle can occupy a LARGE spot a bus needs later"],
+    },
+    {
+      approach: "Best-fit",
+      pros: ["Minimizes wasted capacity — searches the vehicle's exact size class first, widening only if empty"],
+      cons: ["Slightly pricier query (search narrow-to-wide instead of one scan)", "Worse walk time — a driver may get sent past a nearer large spot to a farther exact-fit one"],
+      chosenBecause: "This lesson's worked example uses best-fit — a garage running near capacity is exactly where wasted large-vehicle capacity becomes a real rejected-entry problem.",
+    },
+    {
+      approach: "Level-balancing",
+      pros: ["Spreads load so no single level fills first, keeping search cheap lot-wide"],
+      cons: ["Most complex to compute — needs live per-level occupancy counts, not just a per-level scan"],
+    },
+  ]}
+/>
 
-Both are injected into `ParkingLot` as interfaces rather than hardcoded
-as methods on `ParkingLot` itself. The reason is the same reason twice:
-swapping the pricing model for a holiday surge rate shouldn't require
-touching `Ticket`, `Gate`, or the assignment logic at all — only the
-one class that implements `PricingStrategy`. Recognizing that this
-problem needs Strategy in *two unrelated places* is the detail that
-separates a strong answer from an adequate one.
+<CompareTable
+  title="PricingStrategy — how the fee is computed"
+  rows={[
+    {
+      approach: "Flat-rate",
+      pros: ["Simplest possible implementation, easiest to explain to drivers"],
+      cons: ["Ignores duration entirely — a 10-minute stay costs the same as a 10-hour one"],
+    },
+    {
+      approach: "Tiered-by-hour",
+      pros: ["Matches driver expectations (short stays cost less)", "Simple duration math, no external state needed"],
+      chosenBecause: "This lesson's worked example uses tiered-by-hour — see the fee math below.",
+      cons: ["Still ignores demand — a slow Tuesday and a packed Saturday cost the same"],
+    },
+    {
+      approach: "Time-of-day / surge",
+      pros: ["Matches demand — pricier during peak hours, cheaper off-peak"],
+      cons: ["Most state to track (a live rate schedule or demand signal), hardest to explain to drivers upfront"],
+    },
+  ]}
+/>
 
 **Factory — `VehicleFactory`.** Given a license plate and a size hint
 from the gate's sensor (or a manual attendant entry), the factory
@@ -362,60 +449,65 @@ foreign keys, and normalization (splitting data so each fact lives in
 exactly one place) keeps `spot.status` from silently disagreeing with
 what the tickets table implies.
 
-<DiagramPanel title="Parking lot schema" type="er" chart={`
-erDiagram
-  PARKING_LOT ||--o{ LEVEL : "has"
-  LEVEL ||--o{ SPOT : "has"
-  SPOT ||--o{ TICKET : "assigned via spot_id"
-  VEHICLE ||--o{ TICKET : "identified via vehicle_id"
-  TICKET ||--o{ PAYMENT : "settled by"
+<D2Diagram title="Parking lot schema" type="er" chart={`
+PARKING_LOT: {
+  shape: sql_table
+  id: string {constraint: primary_key}
+  name: string
+  address: string
+}
+LEVEL: {
+  shape: sql_table
+  id: string {constraint: primary_key}
+  lot_id: string {constraint: foreign_key}
+  floor_number: int
+}
+SPOT: {
+  shape: sql_table
+  id: string {constraint: primary_key}
+  level_id: string {constraint: foreign_key}
+  type: string
+  status: string
+}
+VEHICLE: {
+  shape: sql_table
+  plate: string {constraint: primary_key}
+  type: string
+}
+TICKET: {
+  shape: sql_table
+  id: string {constraint: primary_key}
+  vehicle_id: string {constraint: foreign_key}
+  spot_id: string {constraint: foreign_key}
+  entry_time: datetime
+  exit_time: datetime
+  status: string
+  amount_paid: decimal
+}
+PAYMENT: {
+  shape: sql_table
+  id: string {constraint: primary_key}
+  ticket_id: string {constraint: foreign_key}
+  method: string
+  amount: decimal
+  paid_at: datetime
+}
 
-  PARKING_LOT {
-    string id PK
-    string name
-    string address
-  }
-  LEVEL {
-    string id PK
-    string lot_id FK
-    int floor_number
-  }
-  SPOT {
-    string id PK
-    string level_id FK
-    string type
-    string status
-  }
-  VEHICLE {
-    string plate PK
-    string type
-  }
-  TICKET {
-    string id PK
-    string vehicle_id FK
-    string spot_id FK
-    datetime entry_time
-    datetime exit_time
-    string status
-    decimal amount_paid
-  }
-  PAYMENT {
-    string id PK
-    string ticket_id FK
-    string method
-    decimal amount
-    datetime paid_at
-  }
+PARKING_LOT.id <-> LEVEL.lot_id
+LEVEL.id <-> SPOT.level_id
+SPOT.id <-> TICKET.spot_id
+VEHICLE.plate <-> TICKET.vehicle_id
+TICKET.id <-> PAYMENT.ticket_id
 `} />
 
 **Why `spot.status` is a column, not a derived value.** The tempting
 "simpler" schema skips a status column and derives occupancy by
 checking whether any `ticket` row with that `spot_id` has a null
-`exit_time`. That turns "is anything free on level 3" — the single
-most frequent query in the whole system, run on every entry — into a
-join and a scan instead of an indexed point lookup. Storing
-`spot.status` directly denormalizes deliberately: one extra column to
-keep in sync, in exchange for O(1) reads on the hottest query path.
+`exit_time`. That turns "is anything free on level 3" — the single most
+frequent query in the whole system, run on every entry — into a join
+and a scan instead of an indexed point lookup. Storing `spot.status`
+directly denormalizes deliberately: one extra column to keep in sync,
+in exchange for O(1) reads on the hottest query path.
 
 **Indexes, and what each one protects:**
 
@@ -435,9 +527,32 @@ keep in sync, in exchange for O(1) reads on the hottest query path.
 
 **Concurrency: preventing double-assignment.** Two gates can process
 entries in the same millisecond and both read the same spot as free
-before either writes. The fix isn't application-level locking (a mutex
-in one process doesn't protect a second gate's process) — it's an
-atomic compare-and-set at the database:
+before either writes. Application-level locking doesn't fix this — a
+mutex in one process doesn't protect a second gate's process — so the
+fix has to live at the database. Three mechanisms actually do the job,
+with different costs:
+
+<CompareTable
+  title="Concurrency control for spot assignment"
+  rows={[
+    {
+      approach: "Atomic UPDATE...WHERE (CAS)",
+      pros: ["No lock held across a round trip — just one statement", "Loser detects the conflict from the affected-row count and retries immediately"],
+      cons: ["Only protects the single column checked in the WHERE clause"],
+      chosenBecause: "This lesson's choice — cheapest under high contention, and spot assignment only needs to protect status.",
+    },
+    {
+      approach: "Pessimistic row lock (SELECT ... FOR UPDATE)",
+      pros: ["Simple mental model — one transaction holds the row, others block until it commits or rolls back"],
+      cons: ["Blocks concurrent readers/writers for the whole transaction's duration, not just the write — worse under high contention or slow transactions"],
+    },
+    {
+      approach: "Optimistic version-column check",
+      pros: ["Detects any field change on the row, not just status — useful if more than one column can race"],
+      cons: ["Same retry-on-mismatch shape as CAS but needs an extra version column and a read-before-write round trip"],
+    },
+  ]}
+/>
 
 ```sql
 UPDATE spot
@@ -460,42 +575,44 @@ transactions gets `OCCUPIED`.
 
 ## Trade-offs
 
-**Best-fit vs. nearest-fit spot assignment.** Best-fit (smallest
-compatible spot type for the vehicle) minimizes wasted capacity — a
-motorcycle doesn't occupy a `LARGE` spot a bus needs later — at the
-cost of a slightly pricier query (search the vehicle's exact size class
-first, only widen to larger types if that's empty) and a worse walking
-distance for the driver, who might get sent past a nearer large spot to
-a farther exact-fit one. Nearest-fit (first free spot regardless of
-size-class waste, closest to the entrance) is a single cheap query and
-the best walk time, at the cost of exactly the motorcycle-in-a-bus-spot
-waste described earlier. This lesson's worked example uses best-fit,
-because a garage running near capacity — the scenario an interviewer
-usually probes next — is exactly where wasted large-vehicle capacity
-becomes a real rejected-entry problem, not a hypothetical one.
+Two of this lesson's three trade-offs were already named where they're
+decided — best-fit vs. nearest-fit spot assignment under the Strategy
+pattern above, Singleton vs. dependency-injected `ParkingLot` under
+Singleton above — repeated here as pointers because each is a trade-off
+question in its own right, not just a pattern-naming exercise, and an
+interviewer may ask for "the trade-offs" as its own pass over the
+design:
 
-**Push (Observer) vs. poll for occupancy display.** Push means
-`DisplayBoard` always shows the current count with no staleness and no
-wasted queries when nothing changed, at the cost of coupling — a slow
-or crashed `DisplayBoard.onOccupancyChanged()` handler sitting on
-`ParkingLot`'s call stack could, if called synchronously and left
-unguarded, stall the entry/exit hot path over a subsystem the
-non-functional requirements explicitly say is allowed to be down.
-The practical fix is what Observer implementations typically do in
-practice: notify asynchronously (fire the update on a separate thread
-or queue) and swallow/log a slow-or-failed observer rather than let it
-block the gate transaction. Poll (display re-queries the lot every N
-seconds) trades that coupling problem for guaranteed staleness up to
-the polling interval and load proportional to how many boards are
-polling, not how often the count actually changes. This same trade-off
-resurfaces at network scale on the HLD side, where push becomes a
-whole streaming pipeline instead of one in-process callback.
+- **Best-fit vs. nearest-fit spot assignment** — see the
+  `SpotAssignmentStrategy` `CompareTable` above: best-fit minimizes
+  wasted large-vehicle capacity at the cost of a pricier query and
+  worse driver walk time; nearest-fit is cheaper and better for walk
+  time at the cost of exactly that wasted capacity.
+- **Singleton vs. dependency-injected `ParkingLot`** — see the
+  `CompareTable` above: Singleton matches the problem's real constraint
+  ("there is exactly one lot") directly in the type system, DI matches
+  it by convention and buys back testability.
 
-**Singleton vs. dependency-injected `ParkingLot`.** Covered above under
-patterns — repeated here because it's a trade-off question in its own
-right, not just a pattern-naming exercise: Singleton matches the
-problem's real constraint ("there is exactly one lot") directly in the
-type system, DI matches it by convention and buys back testability.
+<CompareTable
+  title="Push (Observer) vs. poll for occupancy display"
+  rows={[
+    {
+      approach: "Push (Observer)",
+      pros: ["DisplayBoard always shows the current count with no staleness", "No wasted queries when nothing changed"],
+      cons: ["Couples ParkingLot to the display: a slow or crashed handler sitting on the call stack, if called synchronously, could stall the entry/exit hot path"],
+      chosenBecause: "Chosen with the coupling fixed by notifying asynchronously (fire on a separate thread or queue) and swallowing/logging a slow-or-failed observer, rather than blocking the gate transaction.",
+    },
+    {
+      approach: "Poll",
+      pros: ["No coupling — display re-queries the lot on its own schedule, ParkingLot never calls out to it"],
+      cons: ["Guaranteed staleness up to the polling interval", "Load proportional to how many boards are polling, not how often the count actually changes"],
+    },
+  ]}
+/>
+
+This same trade-off resurfaces at network scale on the HLD side, where
+push becomes a whole streaming pipeline instead of one in-process
+callback.
 
 <QuizItem
   question="If DisplayBoard.onOccupancyChanged() throws an exception, what should happen to the vehicle currently entering?"
@@ -505,62 +622,78 @@ type system, DI matches it by convention and buys back testability.
 ## Worked example
 
 Trace one full visit through Lot 12, a downtown garage with 6 levels
-and 200 spots per level (1,200 spots total) — squarely in the "hundreds
-to a couple thousand spots" range this problem is scoped for, where a
-facility this size sees roughly one entry or exit every 30-60 seconds
-on average (one published estimate for a 50,000-vehicles/month garage
-works out to about 0.02 transactions/sec) with short bursts at rush
-hour — enough concurrency to need the atomic spot-assignment CAS above,
-nowhere near enough to need horizontal scaling.
+and 200 spots per level — squarely in the "hundreds to a couple
+thousand spots" range this problem is scoped for.
 
-<DiagramPanel title="Entry and exit for one vehicle" type="sequence" chart={`
-sequenceDiagram
-  participant Car as Car (KA-01-HH-1234)
-  participant EG as EntryGate-2
-  participant XG as ExitGate-1
-  participant PL as ParkingLot
-  participant LV as Level 3
-  participant SAS as SpotAssignmentStrategy
-  participant SP as Spot 3-047
-  participant DB as DisplayBoard
+<KeyStat
+  value="1,200 spots"
+  label="Lot 12 capacity (6 levels x 200 spots/level)"
+  detail="6 levels x 200 spots per level = 1,200 spots total, within the hundreds-to-a-couple-thousand-spots scale this problem is scoped for."
+/>
+<KeyStat
+  value="~0.02 tx/sec"
+  label="average entry/exit rate at this scale"
+  detail="One published estimate for a 50,000-vehicles/month garage works out to roughly one entry or exit every 30-60 seconds on average (about 0.02 transactions/sec), with short bursts at rush hour — enough concurrency to need the atomic spot-assignment CAS above, nowhere near enough to need horizontal scaling."
+/>
 
-  Car->>EG: arrives, requests entry
-  EG->>PL: parkVehicle(car)
-  PL->>LV: findAvailableSpot(COMPACT)
-  LV->>SAS: findSpot(level, COMPACT)
-  SAS-->>LV: candidate Spot 3-047
-  LV-->>PL: candidate Spot 3-047
-  PL->>SP: UPDATE status='OCCUPIED' WHERE status='AVAILABLE'
-  SP-->>PL: 1 row affected (won the race)
-  PL->>PL: create Ticket T-1042 (entryTime 14:02)
-  PL->>DB: onOccupancyChanged(level 3, free-1)
-  PL-->>EG: Ticket T-1042
-  EG-->>Car: gate opens, ticket printed
+### Entry
 
-  Note over Car,DB: 2 hours 18 minutes later
+<D2Diagram title="Entry: Car arrives and is assigned Spot 3-047" type="sequence" chart={`
+shape: sequence_diagram
+Car: "Car (KA-01-HH-1234)"
+EG: "EntryGate-2"
+PL: "ParkingLot"
+LV: "Level 3"
+SAS: "SpotAssignmentStrategy"
+SP: "Spot 3-047"
+DB: "DisplayBoard"
 
-  Car->>XG: presents Ticket T-1042
-  XG->>PL: unparkVehicle(T-1042)
-  PL->>PL: validate ticket.status == ISSUED
-  PL->>PL: PricingStrategy.calculateFee(duration=2h18m, COMPACT)
-  Note right of PL: $4 first hour + 2 additional hours (rounded up) x $3 = $10.00
-  PL->>SP: UPDATE status='AVAILABLE' WHERE status='OCCUPIED'
-  PL->>PL: ticket.status = PAID, record Payment $10.00
-  PL->>DB: onOccupancyChanged(level 3, free+1)
-  PL-->>XG: Payment confirmed, $10.00
-  XG-->>Car: gate opens
+Car -> EG: arrives, requests entry
+EG -> PL: parkVehicle(car)
+PL -> LV: findAvailableSpot(COMPACT)
+LV -> SAS: findSpot(level, COMPACT)
+SAS -> LV: candidate Spot 3-047
+LV -> PL: candidate Spot 3-047
+PL -> SP: "UPDATE status='OCCUPIED' WHERE status='AVAILABLE'"
+SP -> PL: 1 row affected (won the race)
+PL -> PL: create Ticket T-1042 (entryTime 14:02)
+PL -> DB: onOccupancyChanged(level 3, free-1)
+PL -> EG: Ticket T-1042
+EG -> Car: gate opens, ticket printed
 `} />
 
-*This trace is the atomic-transition point from the state machine
+### Exit, 2 hours 18 minutes later
+
+<D2Diagram title="Exit: ticket validated, fee charged, spot released" type="sequence" chart={`
+shape: sequence_diagram
+Car: "Car (KA-01-HH-1234)"
+XG: "ExitGate-1"
+PL: "ParkingLot"
+SP: "Spot 3-047"
+DB: "DisplayBoard"
+
+Car -> XG: presents Ticket T-1042
+XG -> PL: unparkVehicle(T-1042)
+PL -> PL: validate ticket.status == ISSUED
+PL -> PL: "PricingStrategy.calculateFee(duration=2h18m, COMPACT)"
+PL -> SP: "UPDATE status='AVAILABLE' WHERE status='OCCUPIED'"
+PL -> PL: "ticket.status = PAID, record Payment $10.00"
+PL -> DB: onOccupancyChanged(level 3, free+1)
+PL -> XG: Payment confirmed, $10.00
+XG -> Car: gate opens
+`} />
+
+*Both traces are the atomic-transition point from the state machine
 section made concrete: the spot flip and the ticket creation happen as
 one committed unit inside `parkVehicle()`, and the same is true of the
 spot release and ticket close inside `unparkVehicle()` — there's no
 window where one has happened and the other hasn't.*
 
-The fee calculation: the Compact tier is $4 for the first hour plus $3
-per additional hour, rounded up. 2 hours 18 minutes is 1 full hour plus
-a partial second hour that rounds up to a full 2 additional hours, so
-$4 + (2 × $3) = $10.00.
+<KeyStat
+  value="$10.00"
+  label="fee for a 2h18m COMPACT stay"
+  detail="The Compact tier is $4 for the first hour plus $3 per additional hour, rounded up. 2 hours 18 minutes is 1 full hour plus a partial second hour that rounds up to 2 additional hours, so $4 + (2 x $3) = $10.00."
+/>
 
 ## Interview angle
 
@@ -628,6 +761,11 @@ payoff the Strategy pattern section promised.
   answer="It must retry spot assignment against a new candidate spot. If it doesn't check the affected-row count and instead assumes success, it will hand the driver a ticket for a spot that's already occupied by someone else — the double-assignment bug the whole compare-and-set exists to prevent."
 />
 
+<QuizItem
+  question="A lot wants to switch from pessimistic row locks to the atomic UPDATE...WHERE compare-and-set for spot assignment. What does it gain, and what does it give up?"
+  answer="It gains lower contention cost — no lock is held across a round trip, so concurrent gates aren't blocked waiting on each other's transaction to finish. It gives up nothing functionally for this specific problem, since spot assignment only needs to protect the status column — a pessimistic lock would have protected the whole row for no extra benefit here."
+/>
+
 ### Open design challenge
 
 Extend the design to support **handicapped spots** and **EV-charging
@@ -692,4 +830,3 @@ state machine.
   "Named the Open/Closed violation that occurs if these rules are bolted on as if/else inside ParkingLot instead of through the existing extension points",
   "Explicitly stated at least one thing that breaks if the base design is left untouched, not just what the extension adds",
 ]} />
-
