@@ -19,9 +19,9 @@ export type DiagramType = "architecture" | "class" | "state" | "sequence" | "er"
 const TYPE_ACCENT: Record<DiagramType, string> = {
   architecture: "text-brand",
   state: "text-brand",
-  sequence: "text-accent-info",
-  class: "text-accent-warn",
-  er: "text-accent-warn",
+  sequence: "text-track-lld",
+  class: "text-state-warn",
+  er: "text-state-warn",
 };
 
 function injectDiagram(container: HTMLDivElement | null, svgMarkup: string | null) {

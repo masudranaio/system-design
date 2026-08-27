@@ -2,18 +2,31 @@
 @import "tailwindcss";
 
 :root {
-  --color-ground: #f5f7fa;
+  --color-ground: #f5f3f5;
   --color-surface: #ffffff;
-  --color-ink: #14171f;
-  --color-ink-muted: #3a4051;
-  --color-brand: #0e7c86;
-  --color-line: #d8dee6;
-  --color-state-available: #2f9e44;
-  --color-state-held: #c97a1a;
-  --color-state-booked: #b23a48;
-  --color-accent-warn: #b8722a;
-  --color-accent-info: #5b4fbf;
-  --color-sidebar-surface: #eef1f6;
+  --color-sidebar-surface: #efecf0;
+  --color-ink: #191721;
+  --color-ink-muted: #605a70;
+  --color-line: #e2dfe8;
+
+  --color-brand: #c01f6b;
+  --color-brand-soft: #fdeef4;
+
+  --color-track-hld: #1c6f96;
+  --color-track-lld: #4f3fb0;
+  --color-track-case-studies: #0c7a5c;
+  --color-track-interview: #a76a10;
+
+  --color-state-ok: #0c7a5c;
+  --color-state-warn: #a76a10;
+  --color-state-bad: #a63241;
+
+  /* Diagrams are printed artifacts: the canvas stays light in both
+     themes so one static palette can serve D2 (whose SVG cannot react
+     to a theme at all) and Mermaid alike. See spec §5.1. */
+  --color-diagram-canvas: #fbfbfc;
+
+  --radius: 0.625rem;
 
   --background: var(--color-ground);
   --foreground: var(--color-ink);
@@ -29,44 +42,59 @@
   --muted-foreground: var(--color-ink-muted);
   --accent: var(--color-surface);
   --accent-foreground: var(--color-ink);
-  --destructive: var(--color-state-booked);
+  --destructive: var(--color-state-bad);
   --destructive-foreground: var(--color-ground);
   --border: var(--color-line);
   --input: var(--color-line);
   --ring: var(--color-brand);
-  --radius: 0.25rem;
 }
 
 :root:not([data-theme="light"]) {
   @media (prefers-color-scheme: dark) {
-    --color-ground: #0b0d12;
-    --color-surface: #12151c;
-    --color-ink: #e7e9f0;
-    --color-ink-muted: #9ba3b4;
-    --color-brand: #34c7b8;
-    --color-line: #262b36;
-    --color-state-available: #4ade80;
-    --color-state-held: #f5a623;
-    --color-state-booked: #f87171;
-    --color-accent-warn: #e8a659;
-    --color-accent-info: #9c93e0;
-    --color-sidebar-surface: #10131a;
+    --color-ground: #17151b;
+    --color-surface: #1f1c25;
+    --color-sidebar-surface: #141218;
+    --color-ink: #eceaf2;
+    --color-ink-muted: #a09aad;
+    --color-line: #302b38;
+
+    --color-brand: #ff7fb2;
+    --color-brand-soft: #2c1a25;
+
+    --color-track-hld: #62c8f2;
+    --color-track-lld: #a99cf5;
+    --color-track-case-studies: #4fd1a5;
+    --color-track-interview: #f9b64e;
+
+    --color-state-ok: #4fd1a5;
+    --color-state-warn: #f9b64e;
+    --color-state-bad: #f78a95;
+
+    --color-diagram-canvas: #f2f1f4;
   }
 }
 
 :root[data-theme="dark"] {
-  --color-ground: #0b0d12;
-  --color-surface: #12151c;
-  --color-ink: #e7e9f0;
-  --color-ink-muted: #9ba3b4;
-  --color-brand: #34c7b8;
-  --color-line: #262b36;
-  --color-state-available: #4ade80;
-  --color-state-held: #f5a623;
-  --color-state-booked: #f87171;
-  --color-accent-warn: #e8a659;
-  --color-accent-info: #9c93e0;
-  --color-sidebar-surface: #10131a;
+  --color-ground: #17151b;
+  --color-surface: #1f1c25;
+  --color-sidebar-surface: #141218;
+  --color-ink: #eceaf2;
+  --color-ink-muted: #a09aad;
+  --color-line: #302b38;
+
+  --color-brand: #ff7fb2;
+  --color-brand-soft: #2c1a25;
+
+  --color-track-hld: #62c8f2;
+  --color-track-lld: #a99cf5;
+  --color-track-case-studies: #4fd1a5;
+  --color-track-interview: #f9b64e;
+
+  --color-state-ok: #4fd1a5;
+  --color-state-warn: #f9b64e;
+  --color-state-bad: #f78a95;
+
+  --color-diagram-canvas: #f2f1f4;
 }
 
 @theme inline {
@@ -89,16 +117,25 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --color-brand: var(--color-brand);
-  --color-line: var(--color-line);
-  --color-state-available: var(--color-state-available);
-  --color-state-held: var(--color-state-held);
-  --color-state-booked: var(--color-state-booked);
-  --color-accent-warn: var(--color-accent-warn);
-  --color-accent-info: var(--color-accent-info);
+  --color-ground: var(--color-ground);
+  --color-surface: var(--color-surface);
   --color-sidebar-surface: var(--color-sidebar-surface);
+  --color-ink: var(--color-ink);
+  --color-ink-muted: var(--color-ink-muted);
+  --color-line: var(--color-line);
+  --color-brand: var(--color-brand);
+  --color-brand-soft: var(--color-brand-soft);
+  --color-track-hld: var(--color-track-hld);
+  --color-track-lld: var(--color-track-lld);
+  --color-track-case-studies: var(--color-track-case-studies);
+  --color-track-interview: var(--color-track-interview);
+  --color-state-ok: var(--color-state-ok);
+  --color-state-warn: var(--color-state-warn);
+  --color-state-bad: var(--color-state-bad);
+  --color-diagram-canvas: var(--color-diagram-canvas);
+  --font-sans: var(--font-sans);
+  --font-display: var(--font-display);
   --font-mono: var(--font-mono);
-  --font-serif: var(--font-serif);
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 4px);
@@ -185,24 +222,27 @@ h6,
  * stylesheet regardless of source order, and the ID is randomized per
  * render so we can never structurally out-specify it — without
  * `!important` every rule below was confirmed (via getComputedStyle) to
- * be silently overridden by mermaid's own default fill/stroke, i.e. no
- * role color or dark-mode adaptation was actually reaching the page.
+ * be silently overridden by mermaid's own default fill/stroke.
+ *
+ * These are static values, not theme tokens: diagrams are printed
+ * artifacts on a fixed "paper" canvas in both themes (see
+ * --color-diagram-canvas above and spec §5.1/§5.2), so there is no
+ * dark-mode adaptation to perform here — the values match
+ * lib/diagram-palette.ts's DIAGRAM_DISPLAY exactly (guarded by the
+ * drift test in lib/diagram-palette.test.ts).
  */
 
 /*
- * Generic default (no diagram-role-* match, e.g. plain "service" nodes):
- * mermaid bakes literal light-theme colors into the SVG at render time
- * (see DiagramPanel.tsx's initMermaid comment — its khroma-based color
- * engine can't consume CSS custom properties), so without this rule
- * default nodes would stay light-themed even in dark mode.
+ * Generic default (no diagram-role-* match, e.g. plain "service" nodes)
+ * uses the same values as the "queue" role.
  */
 .diagram-animate .node .basic,
 .diagram-animate .node rect,
 .diagram-animate .node polygon,
 .diagram-animate .node circle,
 .diagram-animate .node path {
-  fill: color-mix(in srgb, var(--color-brand) 18%, var(--color-surface)) !important;
-  stroke: var(--color-brand) !important;
+  fill: #b9c0cc !important;
+  stroke: #5a6472 !important;
 }
 
 .diagram-animate .diagram-role-client .basic,
@@ -210,8 +250,9 @@ h6,
 .diagram-animate .diagram-role-client polygon,
 .diagram-animate .diagram-role-client circle,
 .diagram-animate .diagram-role-client path {
-  fill: color-mix(in srgb, #3b6fd6 20%, var(--color-surface)) !important;
-  stroke: #3b6fd6 !important;
+  fill: #62c8f2 !important;
+  stroke: #1c6f96 !important;
+  stroke-width: 2px !important;
 }
 
 .diagram-animate .diagram-role-network .basic,
@@ -219,8 +260,19 @@ h6,
 .diagram-animate .diagram-role-network polygon,
 .diagram-animate .diagram-role-network circle,
 .diagram-animate .diagram-role-network path {
-  fill: color-mix(in srgb, var(--color-accent-info) 20%, var(--color-surface)) !important;
-  stroke: var(--color-accent-info) !important;
+  fill: #a99cf5 !important;
+  stroke: #4f3fb0 !important;
+  stroke-width: 2px !important;
+}
+
+.diagram-animate .diagram-role-service .basic,
+.diagram-animate .diagram-role-service rect,
+.diagram-animate .diagram-role-service polygon,
+.diagram-animate .diagram-role-service circle,
+.diagram-animate .diagram-role-service path {
+  fill: #4fd1a5 !important;
+  stroke: #0c7a5c !important;
+  stroke-width: 2px !important;
 }
 
 .diagram-animate .diagram-role-cache .basic,
@@ -228,8 +280,9 @@ h6,
 .diagram-animate .diagram-role-cache polygon,
 .diagram-animate .diagram-role-cache circle,
 .diagram-animate .diagram-role-cache path {
-  fill: color-mix(in srgb, var(--color-accent-warn) 20%, var(--color-surface)) !important;
-  stroke: var(--color-accent-warn) !important;
+  fill: #f9b64e !important;
+  stroke: #a76a10 !important;
+  stroke-width: 2px !important;
 }
 
 .diagram-animate .diagram-role-datastore .basic,
@@ -237,8 +290,9 @@ h6,
 .diagram-animate .diagram-role-datastore polygon,
 .diagram-animate .diagram-role-datastore circle,
 .diagram-animate .diagram-role-datastore path {
-  fill: color-mix(in srgb, var(--color-state-booked) 18%, var(--color-surface)) !important;
-  stroke: var(--color-state-booked) !important;
+  fill: #f78a95 !important;
+  stroke: #a63241 !important;
+  stroke-width: 2px !important;
 }
 
 .diagram-animate .diagram-role-queue .basic,
@@ -246,35 +300,37 @@ h6,
 .diagram-animate .diagram-role-queue polygon,
 .diagram-animate .diagram-role-queue circle,
 .diagram-animate .diagram-role-queue path {
+  fill: #b9c0cc !important;
+  stroke: #5a6472 !important;
+  stroke-width: 2px !important;
   stroke-dasharray: 4 2 !important;
 }
 
 /*
- * Node label text legibility, confirmed live (a dark-theme-only bug the
- * fill/stroke overrides above introduced): mermaid renders flowchart
- * labels as HTML (`.nodeLabel` spans inside a foreignObject, not SVG
- * <text>), and bakes their color as the same literal khroma-safe
- * #14171f used for primaryTextColor in DiagramPanel.tsx's initMermaid.
- * Once node backgrounds go dark via the rules above, that baked-dark
- * text became near-illegible against them — confirmed by screenshot.
- * `color` (not `fill`) is the relevant property for this HTML content;
- * `!important` for the same ID-scoped embedded-style reason as every
- * rule above.
+ * Node label text legibility: the diagram canvas is always paper (see
+ * --color-diagram-canvas), so label text is a single static dark color
+ * in both themes rather than following --color-ink. Covers both
+ * mermaid's HTML `.nodeLabel` spans (foreignObject) and SVG `<text>`
+ * nodes (D2's label element). `color` for the HTML path, `fill` for the
+ * SVG path; `!important` for the same ID-scoped embedded-style reason as
+ * every rule above.
  *
  * Scoped to `.node .nodeLabel` specifically, NOT bare `.nodeLabel` —
  * mermaid reuses the exact same "nodeLabel" class for subgraph/cluster
  * headings (e.g. "Edge layer") and edge labels, confirmed live via
  * outerHTML. Their backgrounds (a cluster's bounding rect, an edge
  * label's pill) are NOT touched by any rule in this file and stay
- * mermaid's hardcoded white in both themes — forcing their text to the
- * dark-mode ink color would put light text on a still-white background,
- * which is itself a legibility regression (confirmed live, reverted).
- * `.node .nodeLabel` only reaches labels actually nested inside a real
- * `g.node` — clusters and edge-label groups are siblings, not
- * descendants, of any node, so this can't cross-match them.
+ * mermaid's hardcoded white — forcing their text to a different color
+ * would risk light text on a still-white background, a legibility
+ * regression confirmed live and reverted previously. `.node .nodeLabel`
+ * only reaches labels actually nested inside a real `g.node` — clusters
+ * and edge-label groups are siblings, not descendants, of any node, so
+ * this can't cross-match them.
  */
 .diagram-animate .node .nodeLabel,
-.diagram-animate .node .nodeLabel * {
-  color: var(--color-ink) !important;
-  fill: var(--color-ink) !important;
+.diagram-animate .node .nodeLabel *,
+.diagram-animate text {
+  color: #0d1b24 !important;
+  fill: #0d1b24 !important;
+  font-weight: 600 !important;
 }

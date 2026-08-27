@@ -15,7 +15,7 @@ interface CompareTableProps {
 export function CompareTable({ title, rows }: CompareTableProps) {
   return (
     <div className="panel-breakout mt-6 overflow-x-auto rounded-lg border border-line bg-card shadow-sm">
-      <p className="border-b border-line px-4 py-2 font-mono text-xs font-semibold tracking-wide text-accent-warn uppercase">
+      <p className="border-b border-line px-4 py-2 font-mono text-xs font-semibold tracking-wide text-state-warn uppercase">
         {title}
       </p>
       <table className="w-full min-w-[36rem] border-collapse text-left text-sm">

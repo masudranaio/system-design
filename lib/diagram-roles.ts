@@ -1,10 +1,4 @@
-export type DiagramRole =
-  | "client"
-  | "network"
-  | "service"
-  | "cache"
-  | "datastore"
-  | "queue";
+export type { DiagramRole } from "./diagram-palette";
 
 const ROLE_KEYWORDS: Record<DiagramRole, RegExp> = {
   cache: /\b(cache|redis)\b/i,

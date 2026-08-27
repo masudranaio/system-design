@@ -7,12 +7,12 @@ export function bandFor(scorePercent: number): {
   className: string;
 } {
   if (scorePercent >= 100) {
-    return { label: "Interview-ready", className: "text-state-available" };
+    return { label: "Interview-ready", className: "text-state-ok" };
   }
   if (scorePercent >= 34) {
-    return { label: "Practicing", className: "text-state-held" };
+    return { label: "Practicing", className: "text-state-warn" };
   }
-  return { label: "Novice", className: "text-state-booked" };
+  return { label: "Novice", className: "text-state-bad" };
 }
 
 export function SelfScoreBand({ scorePercent }: SelfScoreBandProps) {

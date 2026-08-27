@@ -61,3 +61,11 @@ describe("retintD2Svg", () => {
     expect(svg).toContain(".color-N7{color:#FFFFFF;}");
   });
 });
+
+it("globals.css carries the same role colors as the palette module", () => {
+  const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+  for (const { fill, stroke } of Object.values(DIAGRAM_DISPLAY)) {
+    expect(css).toContain(fill);
+    expect(css).toContain(stroke);
+  }
+});
