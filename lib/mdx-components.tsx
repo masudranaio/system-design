@@ -17,30 +17,33 @@ export const mdxComponents: MDXComponents = {
   Point,
   h2: (props) => (
     <h2
-      className="mt-8 text-[1.5rem] leading-[1.3] font-semibold text-foreground"
+      className="mt-8 max-w-[100ch] text-[1.5rem] leading-[1.3] font-semibold text-foreground"
       {...props}
     />
   ),
   h3: (props) => (
     <h3
-      className="mt-6 text-[1.25rem] leading-[1.35] font-semibold text-foreground"
+      className="mt-6 max-w-[100ch] text-[1.25rem] leading-[1.35] font-semibold text-foreground"
       {...props}
     />
   ),
   h4: (props) => (
     <h4
-      className="mt-5 text-[1.0625rem] leading-[1.4] font-semibold text-foreground"
+      className="mt-5 max-w-[100ch] text-[1.0625rem] leading-[1.4] font-semibold text-foreground"
       {...props}
     />
   ),
   p: (props) => (
-    <p className="mt-4 text-[1.09375rem] leading-[1.7] text-foreground" {...props} />
+    <p
+      className="mt-4 max-w-[100ch] text-[1.09375rem] leading-[1.7] text-foreground"
+      {...props}
+    />
   ),
   ul: (props) => (
-    <ul className="mt-4 list-disc pl-6 text-foreground" {...props} />
+    <ul className="mt-4 max-w-[100ch] list-disc pl-6 text-foreground" {...props} />
   ),
   ol: (props) => (
-    <ol className="mt-4 list-decimal pl-6 text-foreground" {...props} />
+    <ol className="mt-4 max-w-[100ch] list-decimal pl-6 text-foreground" {...props} />
   ),
   li: (props) => <li className="mt-1" {...props} />,
   code: (props) => (

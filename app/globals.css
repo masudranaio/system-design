@@ -116,14 +116,6 @@ body {
   width: 100%;
 }
 
-@media (min-width: 1024px) {
-  .panel-breakout {
-    max-width: 56rem;
-    margin-left: 50%;
-    transform: translateX(-50%);
-  }
-}
-
 h1,
 h2,
 h3,
