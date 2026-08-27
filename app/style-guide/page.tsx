@@ -3,6 +3,7 @@ import { Rubric } from "@/components/lesson/Rubric";
 import { DiagramPanel } from "@/components/lesson/DiagramPanel";
 import { D2Diagram } from "@/components/lesson/D2Diagram";
 import { Stage } from "@/components/lesson/Stage";
+import { StackOptions } from "@/components/lesson/StackOptions";
 
 export default function StyleGuidePage() {
   return (
@@ -53,6 +54,26 @@ client -> gateway -> service
           final
         />
       </section>
+
+      <StackOptions
+        title="Availability counters"
+        rows={[
+          {
+            component: "In-memory counter store",
+            oss: "Redis (INCR/DECR)",
+            aws: "ElastiCache for Redis",
+            gcp: "Memorystore for Redis",
+            when: "Managed earns its cost once you need HA failover you don't want to operate.",
+          },
+          {
+            component: "Durable event log",
+            oss: "Kafka",
+            aws: "MSK",
+            gcp: "Pub/Sub",
+            when: "Self-host only if you already run Kafka for something else.",
+          },
+        ]}
+      />
 
       <QuizItem
         question="Why does DiagramPanel take a chart string instead of MDX children?"

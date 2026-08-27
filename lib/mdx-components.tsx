@@ -7,6 +7,7 @@ import { CompareTable } from "@/components/lesson/CompareTable";
 import { KeyStat } from "@/components/lesson/KeyStat";
 import { Point } from "@/components/lesson/Point";
 import { Stage } from "@/components/lesson/Stage";
+import { StackOptions } from "@/components/lesson/StackOptions";
 
 export const mdxComponents: MDXComponents = {
   DiagramPanel,
@@ -17,6 +18,7 @@ export const mdxComponents: MDXComponents = {
   KeyStat,
   Point,
   Stage,
+  StackOptions,
   h2: (props) => (
     <h2 className="mt-10 max-w-[90ch] scroll-mt-24 text-[1.625rem] leading-[1.25] font-semibold text-foreground" {...props} />
   ),
