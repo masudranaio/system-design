@@ -61,7 +61,15 @@ const ROLE_ORDER: DiagramRole[] = [
   "queue",
 ];
 
-const AUTHORED_LABEL_WHITE = /#ffffff/gi;
+// Scoped to <text ...> opening tags only. A document-wide `/#ffffff/gi`
+// replace also matches the SVG's own canvas-background rect
+// (`fill="#FFFFFF" class=" fill-N7"`) and the shared theme CSS rules
+// (`.fill-N7`, `.stroke-N7`, `.background-color-N7`, `.color-N7`, all
+// `#FFFFFF`) that D2 emits once per document — corrupting the "canvas is
+// always paper" background. Matching only inside <text> tags keeps this
+// to node/edge label fills.
+const TEXT_TAG = /<text\b[^>]*>/gi;
+const TEXT_FILL_WHITE_ATTR = /fill="#ffffff"/gi;
 
 export function retintD2Svg(svg: string): { svg: string; roles: DiagramRole[] } {
   const found = new Set<DiagramRole>();
@@ -78,7 +86,9 @@ export function retintD2Svg(svg: string): { svg: string; roles: DiagramRole[] } 
   // Every role's label color is the same value, so white label text can be
   // rewritten in one pass without tracking which shape it belongs to.
   if (found.size > 0) {
-    out = out.replace(AUTHORED_LABEL_WHITE, DIAGRAM_DISPLAY.client.label);
+    out = out.replace(TEXT_TAG, (tag) =>
+      tag.replace(TEXT_FILL_WHITE_ATTR, `fill="${DIAGRAM_DISPLAY.client.label}"`),
+    );
   }
 
   out = out.replace(
