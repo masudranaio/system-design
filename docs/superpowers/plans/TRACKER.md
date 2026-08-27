@@ -1,13 +1,13 @@
 # Implementation Plans Tracker
 
-## LIVE — Case Study Expansion Session (2026-08-27, cron-driven)
+## COMPLETE — Case Study Expansion Session (2026-08-27)
 
-**Started 2026-08-27.** Confirmed 24-task list, executed one task at a
-time, tracker updated after each. A `CronCreate` job (`d3e08e19`, every
-22 min) wakes this session to continue if it stops, and to propose the
-next batch once all 24 are done — do not stop until told to. D2 is the
-diagram engine for all work below; Mermaid is fallback-only if D2 is
-genuinely broken. Spec/plan:
+**Started 2026-08-27, all 24 tasks complete.** Confirmed 24-task list,
+executed one task at a time, tracker updated after each. A `CronCreate`
+job (`d3e08e19`, every 22 min) drove continuation for part of this
+session; cancelled 2026-08-27 per explicit user instruction once direct
+turn-by-turn continuation took over. D2 is the diagram engine for all
+work below; Mermaid is fallback-only if D2 is genuinely broken. Spec/plan:
 [case-study-expansion-and-content-retrofit-design.md](../specs/2026-08-27-case-study-expansion-and-content-retrofit-design.md),
 [case-study-expansion-execution-plan.md](2026-08-27-case-study-expansion-execution-plan.md),
 [d2-diagrams-and-sticky-layout-implementation.md](2026-08-27-d2-diagrams-and-sticky-layout-implementation.md).
@@ -35,7 +35,7 @@ genuinely broken. Spec/plan:
 - [x] C2. Netflix (CS-10) `hld.mdx` — **done**, committed `008fd87`, merged `307529d`.
 - [x] C3. Food Panda (CS-11) `hld.mdx` — **done**, merged earlier this session, `24c495c` (see above, pre-compaction).
 - [x] C4. Event Tracking System (CS-12) `lld.mdx` — **done**, committed `90fb1b3`, merged `fa77273` (resolved an add/add CHECKLIST.md conflict — kept the worktree's completed/checked-off version).
-- [ ] C5. Notification Service (CS-13) `lld.mdx` — **not started**. Its worktree agent was killed by the spend limit before writing anything (clean worktree). Needs full redispatch.
+- [x] C5. Notification Service (CS-13) `lld.mdx` — **done**, redispatched fresh (original agent was killed by the spend limit before writing anything), committed `fb9014d`, merged `67e3a34`. 6 D2 diagrams. Live-verified: 1.5s page load.
 - [x] C6. Dropbox (new CS-14) `hld.mdx` — **done**, committed `bae1d12`, merged `d678819`.
 - [x] C7. Chat/WhatsApp (new CS-15) `hld.mdx` — **done**. This agent actually finished AND committed (`6e5c407`) before the spend limit hit the batch — merged `1713318` (resolved an add/add CHECKLIST.md conflict, same pattern as C4).
 
@@ -51,8 +51,8 @@ both are already-merged ancestors of master, safe to clean up whenever
 that process releases them.
 
 **Phase D — Visual verification pass, both themes**
-- [ ] D1. Visual pass: 7 new lessons (Ride-Sharing, Netflix, Food Panda, Event Tracking, Dropbox, Chat/WhatsApp hld's + Event Tracking lld) — not started.
-- [ ] D2. Visual pass: 6 retrofitted lessons (Ticketmaster hld+lld, Parking Lot hld+lld, Amazon Locker hld+lld) — not started. B5 (Amazon Locker hld retrofit) has landed, so all 6 are now available for this pass.
+- [ ] D1. Visual pass: 8 new lessons (Ride-Sharing, Netflix, Food Panda, Event Tracking, Dropbox, Chat/WhatsApp hld's + Event Tracking + Notification Service lld's) — not started. All content and the perf fix are merged; every page confirmed to load (curl, ~1.5-2.6s each) but none has had a real Playwright pass (both themes, layout/overflow/focus states) yet.
+- [ ] D2. Visual pass: 6 retrofitted lessons (Ticketmaster hld+lld, Parking Lot hld+lld, Amazon Locker hld+lld) — not started, same caveat as D1.
 
 **RESOLVED (2026-08-27) — the 115s/hanging page-load issue.** Root
 cause confirmed: `lib/render-d2.ts` held a single module-level `D2`
@@ -75,7 +75,7 @@ all well within normal page-load range, none hanging. `pnpm test`
 **Phase E — Tracking & continuation**
 - [x] E1. Update `SYLLABUS.md` + this table with final status — done this pass (2026-08-27): case-studies SYLLABUS.md priority table + progress line, root SYLLABUS.md progress row, this table's Phase B/C checkboxes.
 - [x] E2. Create the `CronCreate` recurring wake-up job — **cancelled 2026-08-27** per explicit user instruction ("now no need that croncreate job, you first delete the croncreate"). Job `d3e08e19` deleted. No replacement scheduled — this session continues under direct user turns instead.
-- [ ] E3. Once all 24 done, propose + start next batch from the Extended list — blocked on B5 + C5 (the only 2 remaining of the 24), plus Phase D's visual pass and the 115s perf investigation.
+- [ ] E3. Once all 24 done, propose + start next batch from the Extended list — **all 24 of this batch's tasks are now done** (B5 and C5 landed; the 115s perf bug is root-caused and fixed). Remaining before starting a new batch: Phase D's visual verification pass (D1/D2 above), per CLAUDE.md's UI-verification rule.
 
 ---
 
