@@ -10,6 +10,31 @@
     "excerpt": "Problem framing\n\nZoom in to a single locker station: one bank of compartments bolted to a\nwall in an apartment lobby or grocery store, with no knowledge of any\nother station in the network. A courie"
   },
   {
+    "title": "Chat/WhatsApp: High-Level Design",
+    "href": "/case-studies/chat-whatsapp/hld",
+    "excerpt": "Every case study so far has been a request/response problem wearing\ndifferent clothes: a client asks, a server answers, the connection closes.\nChat breaks that shape entirely. A message has to reach"
+  },
+  {
+    "title": "Dropbox: High-Level Design",
+    "href": "/case-studies/dropbox/hld",
+    "excerpt": "Ticketmaster's hard problem is contention: many buyers racing for one seat.\nDropbox's hard problem is almost the opposite — there's no race, just one\nuser's own files, but those files are large, edit"
+  },
+  {
+    "title": "Event Tracking System: Low-Level Design",
+    "href": "/case-studies/event-tracking-system/lld",
+    "excerpt": "Problem framing\n\nEvery product with a analytics.track(\"checkoutcompleted\", properties) call\nsomewhere in its codebase has this system behind it: a client SDK that\ncaptures the event, a server that a"
+  },
+  {
+    "title": "Food Panda: High-Level Design",
+    "href": "/case-studies/food-panda/hld",
+    "excerpt": "A ride-share match is instant: rider and driver both exist right now, so\nthe system just has to find the closest pair. A food-delivery match can't\nbe instant, because one side of the match — the meal"
+  },
+  {
+    "title": "Netflix: High-Level Design",
+    "href": "/case-studies/netflix/hld",
+    "excerpt": "Netflix's hard problem isn't storing movies — it's that \"press play\" has\nto turn into a stream of bytes arriving faster than the screen consumes\nthem, for hundreds of millions of people at once, on e"
+  },
+  {
     "title": "Parking Lot — High-Level Design",
     "href": "/case-studies/parking-lot/hld",
     "excerpt": "This lesson picks up where the\n[Parking Lot LLD](/case-studies/parking-lot/lld) left off. That lesson\nmodeled a single facility: one ParkingLot, its Levels, Spots, and\nthe Gates that atomically flip"
@@ -18,6 +43,11 @@
     "title": "Parking Lot — Low-Level Design",
     "href": "/case-studies/parking-lot/lld",
     "excerpt": "Problem framing\n\nParking lot is the \"Hello World\" of low-level design interviews — not\nbecause it's trivial, but because it's small enough to fully model in\n45 minutes while still forcing every core"
+  },
+  {
+    "title": "Ride-Sharing: High-Level Design",
+    "href": "/case-studies/ride-sharing/hld",
+    "excerpt": "Uber's hard problem isn't drawing a car icon moving on a map — it's that\nboth sides of the match are moving continuously, in both directions, all\nthe time. A rider requesting a trip needs a driver as"
   },
   {
     "title": "Ticketmaster: High-Level Design",
