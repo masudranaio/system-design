@@ -1,0 +1,1032 @@
+---
+title: "Dropbox: High-Level Design"
+---
+
+Ticketmaster's hard problem is contention: many buyers racing for one seat.
+Dropbox's hard problem is almost the opposite — there's no race, just one
+user's own files, but those files are large, edited constantly, and live on
+several devices at once. The question isn't "who wins the write," it's "how
+do we keep N devices byte-identical with the server without re-sending a
+whole file every time one byte changes."
+
+## Problem framing
+
+A user opens a 40-page slide deck on their laptop, fixes a typo on slide 12,
+and saves. If Dropbox re-uploaded the whole 18MB file for that one-word
+change, and then re-downloaded that same 18MB to every other device linked
+to the account, the product would be unusable on anything but a fast,
+unmetered connection. Do that across 500M accounts and the storage bill
+alone — paying to store the same bytes over and over, once per version, once
+per device — would be enormous even before counting bandwidth.
+
+So the defining challenge here is **bandwidth and storage efficiency first,
+consistency second** — the mirror image of Ticketmaster's framing.
+Ticketmaster had to serialize contending writers against a fixed, scarce
+resource (a seat) under a hard latency budget; correctness under contention
+was the whole problem, and it was solvable because the workload per write is
+small (one seat, one buyer, milliseconds to decide). Dropbox has almost no
+contention in the common case — a file is usually edited by one person on
+one device at a time — but the *objects* being moved around are enormous
+compared to a seat-lock write, and they have to move between many
+independent devices that aren't all online at once. That reframes the
+system: instead of "how do we lock a small resource correctly," it's "how do
+we detect and transfer only the bytes that changed, and what do we do on the
+rare occasion two devices changed the same file while neither could see the
+other."
+
+<QuizItem
+  question="Why isn't Dropbox's core design problem framed as a consistency/locking problem the way Ticketmaster's is?"
+  answer="Because the workloads differ in kind, not just degree: Ticketmaster has many independent buyers contending for one small, scarce resource in real time, so correctness-under-contention is the whole problem. Dropbox's files are usually edited by one person at a time, but each file is large and has to move between devices that aren't all online together -- so the dominant cost is bandwidth/storage efficiency (send only what changed), with conflict handling as a secondary, comparatively rare concern."
+/>
+
+## Requirements & capacity estimate
+
+**Functional requirements:**
+
+- Upload a file and download it back, byte-for-byte identical
+- Sync a create/edit/delete/rename/move across every linked device without a
+  manual re-upload
+- Detect a same-file edit made on two devices before either finished
+  syncing, and resolve it without silently losing data
+- Share a file or folder with another user, read-only or read-write
+- Keep version history and allow reverting to a prior version
+- Work offline: queue local edits and reconcile once connectivity returns
+
+**Non-functional requirements:**
+
+- Storage efficiency: near-duplicate and repeated content isn't stored twice
+  (chunk-level dedup)
+- Sync latency: a change on one device is visible on another within a few
+  seconds under normal connectivity — not a slow poll interval
+- Bandwidth efficiency: a small edit to a large file transfers only the
+  changed bytes
+- Metadata (the canonical file tree) is strongly consistent on the server;
+  device-to-device state can be eventually consistent
+- Durability: an acknowledged write survives storage-node failure
+- Scale target: ~500M registered users, ~100M daily active devices
+
+**Out of scope for this lesson:** end-to-end encryption key management,
+filesystem-watcher internals (inotify/FSEvents/ReadDirectoryChangesW treated
+as a black box that "detects a local change happened"), real-time
+collaborative co-editing inside one open document (operational
+transform/CRDT — Dropbox syncs whole files/chunks, not live cursors),
+billing/quota UX, and camera-upload features.
+
+**Back-of-envelope math:**
+
+<KeyStat
+  value="~10 EB raw"
+  label="Total file bytes across all accounts before dedup"
+  detail="500M registered users x an assumed ~10,000 files/user x an assumed 2MB average file size = 20GB/user. 20GB x 500M users = 10,000,000,000 GB = 10 exabytes raw, before any deduplication."
+/>
+
+<KeyStat
+  value="~2.5 trillion chunks"
+  label="Total chunks stored before dedup, at a 4MB average chunk size"
+  detail="20GB/user / 4MB per chunk = 5,000 chunks/user. 5,000 x 500M users = 2.5 x 10^12 chunks system-wide, before collapsing duplicate hashes."
+/>
+
+<KeyStat
+  value="~7 EB actual"
+  label="Estimated stored bytes after ~30% cross-user + cross-version dedup"
+  detail="Shared installers, common templates, stock assets, and a user's own prior file versions all produce repeated chunk hashes. A 30% reduction is a conservative assumption for chunk-level content-addressed dedup: 10 EB x 0.7 ~= 7 EB actually written to blob storage."
+/>
+
+<KeyStat
+  value="~300M long-lived connections"
+  label="Peak concurrent notification-channel connections"
+  detail="100M daily active devices, assuming ~3 linked devices per active account hold an open sync channel at once = ~300M concurrent long-poll/WebSocket connections the notification tier has to keep alive."
+/>
+
+## Architecture
+
+<D2Diagram
+  title="Dropbox system overview"
+  type="architecture"
+  chart={`direction: right
+
+Client: {
+  label: "Client\\n(desktop / mobile / web)"
+  shape: rectangle
+  style.fill: "#3b6fd6"
+  style.stroke: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+Gateway: {
+  label: "API Gateway"
+  shape: rectangle
+  style.fill: "#5b4fbf"
+  style.stroke: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+Metadata: {
+  label: "Metadata Service"
+  shape: rectangle
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+MetadataDB: {
+  label: "Metadata DB\\n(sharded relational)"
+  shape: cylinder
+  style.fill: "#b23a48"
+  style.stroke: "#b23a48"
+  style.font-color: "#ffffff"
+}
+BlockService: {
+  label: "Block Service"
+  shape: rectangle
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+BlobStorage: {
+  label: "Blob Storage\\n(content-addressed)"
+  shape: cylinder
+  style.fill: "#b23a48"
+  style.stroke: "#b23a48"
+  style.font-color: "#ffffff"
+}
+MQ: {
+  label: "Message Queue"
+  shape: queue
+  style.fill: "#4b5262"
+  style.stroke: "#4b5262"
+  style.font-color: "#ffffff"
+}
+Notify: {
+  label: "Notification Service"
+  shape: rectangle
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+
+Client -> Gateway: "HTTPS request"
+Gateway -> Metadata: "file tree op"
+Metadata -> MetadataDB: "read / write"
+Gateway -> BlockService: "chunk upload / download"
+BlockService -> BlobStorage: "content-addressed blocks"
+Metadata -> MQ: "file.changed event"
+MQ -> Notify
+Notify -> Client: "sync hint (long-poll / WS)"
+`}
+/>
+
+*The write path splits in two the moment a request leaves the gateway: file
+**metadata** — the tree structure, filenames, permissions, and each file's
+chunk manifest — goes to the Metadata Service and its relational store; file
+**content** goes to the Block Service and blob storage. The Notification
+Service is a separate path entirely, running server-to-client rather than
+client-to-server, so a change made on one device can reach another without
+that device having to poll.*
+
+{/* concept-dependency: HLD-09 not yet built, explained inline */}
+The Metadata DB is sharded (partitioned across many database nodes,
+typically by account ID) rather than a single relational instance, because
+500M accounts' worth of file trees don't fit — or perform — on one machine.
+Sharding by account ID keeps one user's entire file tree on one shard, so a
+"list this folder" query never has to fan out across shards; the trade-off
+is that operations spanning two different accounts (like a shared-folder
+permission update) have to coordinate across shards instead of running as
+one local transaction.
+
+Dropbox's own production system (Magic Pocket for block storage, MySQL
+sharded with Vitess for metadata) is the concrete reference point this split
+is modeled on — it's a useful example precisely because a system at this
+scale independently arrived at the same metadata/blob split described here.
+
+<QuizItem
+  question="Why does file metadata live in a sharded relational database while file content lives in a separate blob store, instead of one system handling both?"
+  answer="They need different guarantees. Metadata (the file tree, permissions, chunk manifests) must be strongly consistent and query-able by structure -- 'what does this user's folder look like right now' -- which relational storage is built for. Blob content is enormous, immutable once written, and looked up by a single hash key -- a much simpler access pattern that a horizontally-scaled, eventually-consistent object store handles far more cheaply than a relational database would."
+/>
+
+## Core content: deep dives
+
+### Chunking strategy
+
+Splitting a file into pieces is what makes delta sync possible at all — but
+*how* it's split determines whether a one-byte edit invalidates one piece or
+every piece after it.
+
+<CompareTable
+  title="Chunking strategies"
+  rows={[
+    {
+      approach: "Whole-file hashing",
+      pros: ["Trivial to implement", "One hash identifies the whole file"],
+      cons: [
+        "No delta sync possible at all -- any edit re-uploads and re-downloads the entire file",
+        "No dedup below the file level -- two 99%-identical files store as two full copies",
+      ],
+    },
+    {
+      approach: "Fixed-size chunking",
+      pros: [
+        "Simple: cut every N bytes (Dropbox uses ~4MB)",
+        "Fast to compute, no scanning required",
+      ],
+      cons: [
+        "A single inserted or deleted byte shifts every chunk boundary after it, so nearly all later chunks get new hashes even though their content barely changed",
+        "Dedup quality collapses on mid-file inserts (e.g. someone adds a paragraph at the top of a document)",
+      ],
+    },
+    {
+      approach: "Content-defined chunking (rolling hash)",
+      pros: [
+        "Boundaries are anchored to the file's content (a Rabin fingerprint / rolling hash marks a cut point whenever a local pattern occurs), so an edit only changes the chunk(s) near it",
+        "Dedup quality holds up even under mid-file inserts/deletes",
+      ],
+      cons: [
+        "More CPU to compute (has to scan and hash a rolling window, not just cut at fixed offsets)",
+        "Chunk sizes vary, which complicates capacity planning slightly",
+      ],
+      chosenBecause:
+        "It's the only strategy where the two goals of this system -- delta sync and dedup -- both hold up under realistic mid-file edits, not just append-only changes",
+    },
+  ]}
+/>
+
+<D2Diagram
+  title="Fixed-size vs. content-defined chunking under a mid-file insert"
+  type="architecture"
+  chart={`direction: right
+
+FixedSize: "Fixed-size chunking" {
+  style.fill: "transparent"
+  style.stroke: "#9ba3b4"
+  Before: {
+    label: "...ABCDEFGH..."
+    shape: rectangle
+    style.fill: "#0e7c86"
+    style.stroke: "#0e7c86"
+    style.font-color: "#ffffff"
+  }
+  Inserted: {
+    label: "insert 1 byte:\\n...AxBCDEFGH..."
+    shape: rectangle
+    style.fill: "#b23a48"
+    style.stroke: "#b23a48"
+    style.font-color: "#ffffff"
+  }
+  Before -> Inserted: "every boundary after\\nthe insert shifts"
+}
+
+ContentDefined: "Content-defined chunking" {
+  style.fill: "transparent"
+  style.stroke: "#9ba3b4"
+  Before2: {
+    label: "...ABCDEFGH..."
+    shape: rectangle
+    style.fill: "#0e7c86"
+    style.stroke: "#0e7c86"
+    style.font-color: "#ffffff"
+  }
+  Inserted2: {
+    label: "insert 1 byte:\\n...AxBCDEFGH..."
+    shape: rectangle
+    style.fill: "#0e7c86"
+    style.stroke: "#0e7c86"
+    style.font-color: "#ffffff"
+  }
+  Before2 -> Inserted2: "rolling hash re-anchors:\\nonly local chunk changes"
+}
+`}
+/>
+
+*Same one-byte insert, two outcomes: fixed-size chunking treats it as a
+shift that invalidates every later boundary; content-defined chunking's
+rolling hash re-finds the same cut points on either side of the edit, so
+only the chunk(s) touching the insert actually change.*
+
+<QuizItem
+  question="A user inserts one sentence at the very start of a 50MB document. Under fixed-size chunking, roughly how many chunks need to be re-uploaded? Under content-defined chunking?"
+  answer="Fixed-size: effectively all of them -- the insert shifts every byte after it, so every chunk boundary from that point on lands in a different place and every chunk hashes differently. Content-defined: only the chunk(s) immediately containing the insert -- the rolling hash re-anchors to the same content-based cut points everywhere else in the file, so the rest of the chunks re-hash identically to before."
+/>
+
+### Deduplication
+
+Chunking only pays off if identical chunks are actually stored once. Dropbox
+does this with **content-addressable storage**: a chunk's key isn't an
+arbitrary ID assigned at upload time, it's the SHA-256 hash of the chunk's
+own bytes. Two chunks with identical content always produce the identical
+key, which makes "have we already stored this?" a single index lookup
+rather than a byte-for-byte comparison against every existing chunk.
+
+<Point icon="layers">
+  <strong>Cross-user dedup.</strong> The same installer, stock template, or
+  forwarded PDF uploaded by two different accounts hashes to the same chunk
+  key, so it's physically stored once regardless of how many accounts
+  reference it — the dedup check has no concept of "whose" chunk it is,
+  only what hash it is.
+</Point>
+<Point icon="branch">
+  <strong>Reference counting.</strong> Every chunk keeps a reference count of
+  how many files (across every account) point to it. Uploading a chunk whose
+  hash already exists increments the count and skips the actual data
+  transfer; deleting a file decrements the count for each of its chunks. A
+  chunk's bytes are only actually removed from blob storage once its
+  reference count hits zero — so one user deleting a file can never corrupt
+  another user's still-referenced copy of the same chunk.
+</Point>
+<Point icon="lock">
+  <strong>Encryption doesn't break this.</strong> Dedup runs before
+  content-level encryption is applied for a given storage tier's key scope,
+  or on chunks encrypted with a scheme that preserves identical ciphertext
+  for identical plaintext within that scope — otherwise every account's
+  encryption key would make every chunk hash unique and dedup would never
+  fire. (Key management specifics are out of scope here.)
+</Point>
+
+<D2Diagram
+  title="Chunk upload: hash, dedup-check, store-or-reference"
+  type="architecture"
+  chart={`direction: right
+
+Client: {
+  shape: rectangle
+  style.fill: "#3b6fd6"
+  style.stroke: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+Chunker: {
+  label: "Chunker"
+  shape: rectangle
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+Hasher: {
+  label: "Hasher\\n(SHA-256 per chunk)"
+  shape: rectangle
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+ChunkIndex: {
+  label: "Chunk Index"
+  shape: cylinder
+  style.fill: "#b23a48"
+  style.stroke: "#b23a48"
+  style.font-color: "#ffffff"
+}
+BlobStorage: {
+  label: "Blob Storage"
+  shape: cylinder
+  style.fill: "#b23a48"
+  style.stroke: "#b23a48"
+  style.font-color: "#ffffff"
+}
+
+Client -> Chunker: "local file"
+Chunker -> Hasher: "content-defined chunks"
+Hasher -> ChunkIndex: "look up hash"
+ChunkIndex -> BlobStorage: "new hash: store block"
+ChunkIndex -> ChunkIndex: "known hash: refcount++"
+`}
+/>
+
+<QuizItem
+  question="Two different Dropbox accounts each upload the exact same 5MB PDF. How much blob storage does that actually consume, and why?"
+  answer="One copy's worth (split across its content-defined chunks), not two. Because chunk keys are the SHA-256 hash of the chunk's own bytes, both uploads compute the same hashes; the second upload's dedup check finds the hash already present, increments each chunk's reference count, and skips writing the bytes again."
+/>
+
+### Metadata vs. blob storage split
+
+This split was already visible in the architecture diagram above; the
+reason it's deliberate rather than incidental is worth spelling out.
+
+{/* concept-dependency: HLD-07 not yet built, explained inline */}
+Metadata — the file tree, each file's chunk manifest (ordered list of chunk
+hashes that reassemble into the file), and sharing permissions — needs
+transactional guarantees: renaming a folder and updating every child path
+underneath it has to happen atomically, or a crash mid-rename leaves the
+tree in a state no client can reconcile. That's exactly what a relational
+store gives: ACID transactions (a write either fully commits or fully rolls
+back) and a queryable structure ("list everything under this folder").
+
+Blob storage has the opposite shape of requirements: chunks are immutable
+once written (a chunk's key is its own content hash, so there's never an
+"update this chunk in place" operation, only "write a new one"), enormous in
+aggregate (~7 EB, from the estimate above), and looked up by a single key
+with no relational structure needed. That access pattern is a much better
+fit for a horizontally-scaled, eventually-consistent object store than for
+a relational database — replicating a chunk to a third datacenter a few
+seconds after the first write is perfectly fine, since nothing ever mutates
+that chunk afterward to go stale.
+
+<CompareTable
+  title="Metadata store vs. blob store requirements"
+  rows={[
+    {
+      approach: "Metadata store",
+      pros: [
+        "Strong consistency for the canonical file tree",
+        "Transactional multi-row updates (rename cascades correctly)",
+        "Efficient structural queries (list folder, resolve path)",
+      ],
+      cons: [
+        "Harder to scale horizontally than a pure key-value store",
+        "Relatively small per account compared to blob volume",
+      ],
+      chosenBecause:
+        "The file tree must never be ambiguous -- two devices need one agreed-upon answer to 'what does this folder contain right now'",
+    },
+    {
+      approach: "Blob store",
+      pros: [
+        "Scales horizontally to exabytes across cheap commodity storage nodes",
+        "Simple key -> bytes access pattern, no schema needed",
+        "Eventual replication is safe since chunks never mutate",
+      ],
+      cons: [
+        "No structural queries -- can't ask it 'what files does this chunk belong to'",
+        "Not the source of truth for what currently exists -- that's metadata's job",
+      ],
+      chosenBecause:
+        "Chunk content is enormous in aggregate and immutable once written, which is exactly the workload object storage is built for",
+    },
+  ]}
+/>
+
+### Sync conflict detection
+
+Most syncs never conflict — one device edits, the change propagates, done.
+The design has to cover the case where it isn't: Device A and Device B both
+had the file at version 1, both went offline, both saved an edit, and now
+both are trying to sync a change based on the same starting point.
+
+<CompareTable
+  title="Detecting a conflicting edit"
+  rows={[
+    {
+      approach: "Last-write-wins (timestamp compare)",
+      pros: [
+        "Simple to implement -- just compare 'modified at' timestamps",
+        "No extra metadata to track per file",
+      ],
+      cons: [
+        "Client clocks drift and skew -- a device with a clock 5 minutes fast can make an older edit look newer and silently overwrite a genuinely newer one",
+        "Silently discards one user's work with no signal that it happened",
+      ],
+    },
+    {
+      approach: "Version-vector / version-counter per file",
+      pros: [
+        "Doesn't depend on wall-clock time at all -- compares the version number each device's edit was based on against the server's current version",
+        "Detects divergence unambiguously: if a device's sync is based on an older version than the server currently holds, that's a real conflict, not a timing artifact",
+      ],
+      cons: [
+        "Requires tracking a version pointer per file and per client's last-known-synced version",
+        "Still has to decide what to *do* once divergence is detected (see below) -- detection alone doesn't resolve it",
+      ],
+      chosenBecause:
+        "It reliably tells the difference between 'a genuinely newer edit' and 'a clock that's wrong', which is the exact failure mode that makes silent data loss unacceptable here",
+    },
+  ]}
+/>
+
+Once divergence is detected, Dropbox doesn't attempt an automatic content
+merge — these are opaque binary files (photos, PDFs, spreadsheets), not
+line-based text a diff tool can safely combine. Instead, the second
+writer's branch is saved as a **conflicted copy**: the original filename
+keeps the version that reached the server first, and the divergent edit is
+saved alongside it as `filename (Device Name's conflicted copy).ext`,
+leaving both versions fully intact for the user to manually reconcile.
+
+<D2Diagram
+  title="Two devices, one file, diverging versions"
+  type="architecture"
+  chart={`direction: right
+
+DeviceA: {
+  label: "Device A"
+  shape: rectangle
+  style.fill: "#3b6fd6"
+  style.stroke: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+DeviceB: {
+  label: "Device B"
+  shape: rectangle
+  style.fill: "#3b6fd6"
+  style.stroke: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+Metadata: {
+  label: "Metadata Service"
+  shape: rectangle
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+ConflictDetector: {
+  label: "Conflict Detector\\n(version-vector compare)"
+  shape: rectangle
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+ConflictedCopy: {
+  label: "conflicted copy\\ncreated"
+  shape: rectangle
+  style.fill: "#b23a48"
+  style.stroke: "#b23a48"
+  style.font-color: "#ffffff"
+}
+
+DeviceA -> Metadata: "sync edit (base v1 -> v2a)"
+DeviceB -> Metadata: "sync edit (base v1 -> v2b)"
+Metadata -> ConflictDetector: "diverging version pointers"
+ConflictDetector -> ConflictedCopy: "second writer's branch"
+`}
+/>
+
+<QuizItem
+  question="Why doesn't Dropbox just compare 'last modified' timestamps to decide which of two conflicting edits wins?"
+  answer="Client clocks aren't reliable -- a device with a clock that's a few minutes fast can make an objectively older edit look newer, causing the server to silently keep the wrong version and discard real work with no warning. A version-vector/version-counter compare instead asks 'was this edit based on the server's current version or an older one', which is unaffected by clock skew and reliably distinguishes a real conflict from a timing artifact."
+/>
+
+### Change notification
+
+A device that just made an edit needs every *other* linked device to find
+out quickly — without every device polling the server every few seconds
+just in case, which would waste bandwidth and battery for the near-total
+majority of poll cycles where nothing changed.
+
+<CompareTable
+  title="Notification transport"
+  rows={[
+    {
+      approach: "Plain (short-interval) polling",
+      pros: ["Trivial to implement", "No persistent connection to manage"],
+      cons: [
+        "Latency is bounded by the poll interval, not the actual change",
+        "Wastes requests -- nearly every poll returns 'nothing changed'",
+      ],
+    },
+    {
+      approach: "Long-polling",
+      pros: [
+        "Server holds the request open and responds the moment something changes, so latency is near-immediate without constant re-requesting",
+        "Simpler server-side connection model than a full-duplex socket",
+      ],
+      cons: [
+        "Still pays a new HTTP request/response cycle per notification cycle",
+        "Higher per-connection overhead than a persistent socket at very large scale",
+      ],
+    },
+    {
+      approach: "WebSocket",
+      pros: [
+        "One persistent, full-duplex connection -- lowest latency, least reconnect overhead",
+      ],
+      cons: [
+        "Holding ~300M concurrent open sockets is a real infrastructure cost (connection-tracking state per socket on notification servers)",
+        "More complex to load-balance and fail over than stateless request/response",
+      ],
+      chosenBecause:
+        "For always-connected desktop clients, the lower latency and connection overhead justify the cost; long-polling remains the fallback for clients behind networks that block persistent sockets",
+    },
+  ]}
+/>
+
+The more important design decision than *which* transport is what the
+notification actually carries: **the notification is a hint, not the
+payload.** The message pushed to a client says only "something changed for
+you" (or, at most, which file/folder) — it never carries the authoritative
+diff itself. The client always turns around and pulls the real delta from
+the Metadata Service in a normal authenticated request.
+
+<Point icon="shield">
+  This matters for two reasons: a notification can be delivered out of
+  order, duplicated, or dropped without corrupting sync state, since it's
+  only ever a trigger to go check — and the notification channel never has
+  to be trusted with the actual file content or tree state, only with "wake
+  up and ask."
+</Point>
+
+<D2Diagram
+  title="Notification is a hint; the client re-pulls the real delta"
+  type="architecture"
+  chart={`direction: right
+
+Metadata: {
+  label: "Metadata Service"
+  shape: rectangle
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+MQ: {
+  shape: queue
+  style.fill: "#4b5262"
+  style.stroke: "#4b5262"
+  style.font-color: "#ffffff"
+}
+Notify: {
+  label: "Notification Service"
+  shape: rectangle
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+Client: {
+  shape: rectangle
+  style.fill: "#3b6fd6"
+  style.stroke: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+
+Metadata -> MQ: "file.changed event"
+MQ -> Notify
+Notify -> Client: "hint (long-poll / WS push)"
+Client -> Metadata: "pull authoritative delta"
+`}
+/>
+
+<QuizItem
+  question="A client receives the same 'file changed' notification twice due to a network retry. What breaks?"
+  answer="Nothing. Because the notification only ever triggers a pull of the authoritative delta from the Metadata Service rather than carrying the change itself, receiving it twice just means the client asks 'what changed' twice -- the second pull either finds nothing new or re-fetches the same already-applied delta, which is a harmless no-op rather than a duplicate write."
+/>
+
+### Offline support
+
+A laptop closes its lid on an airplane; edits made during the flight can't
+reach the server until it reconnects. The client has to keep working during
+that gap and reconcile cleanly afterward.
+
+<Point icon="clock">
+  <strong>Local edit queue.</strong> Every local change (create/edit/delete/
+  rename/move) is applied to the local filesystem immediately and appended
+  to a durable local queue, rather than blocking the user on network
+  availability.
+</Point>
+<Point icon="database">
+  <strong>Optimistic local apply.</strong> The user sees their edit
+  instantly, as if it already synced — the UI doesn't wait for a round trip
+  to the server before showing the change as "saved."
+</Point>
+<Point icon="branch">
+  <strong>Replay on reconnect.</strong> Once connectivity returns, the sync
+  engine flushes the queue in order against the server, using the same
+  delta-sync and chunk-upload path a connected client would use for a live
+  edit — offline sync isn't a separate code path, just a deferred one.
+</Point>
+<Point icon="shield">
+  <strong>Conflict on replay.</strong> If a queued local edit's base version
+  no longer matches the server's current version — because a *different*
+  device pushed a change to the same file while this one was offline — it
+  hits the exact same conflict-detection path described above and produces
+  a conflicted copy, rather than a special "offline-specific" resolution
+  rule.
+</Point>
+
+<D2Diagram
+  title="Local edit queue, flushed on reconnect"
+  type="architecture"
+  chart={`direction: right
+
+Client: {
+  shape: rectangle
+  style.fill: "#3b6fd6"
+  style.stroke: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+LocalQueue: {
+  label: "Local edit queue"
+  shape: queue
+  style.fill: "#4b5262"
+  style.stroke: "#4b5262"
+  style.font-color: "#ffffff"
+}
+SyncEngine: {
+  label: "Sync engine"
+  shape: rectangle
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+BlockService: {
+  shape: rectangle
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+
+Client -> LocalQueue: "queue edit while offline"
+LocalQueue -> SyncEngine: "flush on reconnect"
+SyncEngine -> BlockService: "replay queued edits"
+SyncEngine -> LocalQueue: "requeue on conflict"
+`}
+/>
+
+{/* concept-dependency: LLD-03 not yet built, explained inline */}
+A file's local sync status (queued / syncing / synced / conflicted) is a
+natural fit for the **State** pattern rather than a scattered set of boolean
+flags — each state has its own allowed transitions (a `conflicted` file
+can't silently flip back to `synced` without user action), which is exactly
+the kind of lifecycle-with-guarded-transitions the State pattern exists
+for. This is covered at the class level in `lld.mdx` (deferred; see the
+case study's `CHECKLIST.md`).
+
+### Delta sync end-to-end
+
+Putting chunking, dedup, and the metadata split together: when a file
+changes locally, the client doesn't ask "did the whole file change" — it
+computes chunk hashes for the current file, diffs that list against the
+manifest it last successfully synced, and uploads only the chunks that
+don't match.
+
+<D2Diagram
+  title="Delta sync: upload only what changed"
+  type="architecture"
+  chart={`direction: right
+
+Client: {
+  shape: rectangle
+  style.fill: "#3b6fd6"
+  style.stroke: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+LocalManifest: {
+  label: "Local chunk manifest"
+  shape: rectangle
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+DiffEngine: {
+  label: "Diff vs. last-synced manifest"
+  shape: rectangle
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+BlockService: {
+  shape: rectangle
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+Metadata: {
+  label: "Metadata Service"
+  shape: rectangle
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+
+Client -> LocalManifest: "compute local chunk hashes"
+LocalManifest -> DiffEngine
+DiffEngine -> BlockService: "upload only changed chunks"
+BlockService -> Metadata: "update chunk-list manifest"
+`}
+/>
+
+A file's chunk manifest — the ordered list of chunk hashes that reassemble
+into the exact original bytes — is itself a small piece of metadata, which
+is why it lives in the Metadata Service rather than being derived on
+demand: reconstructing a file for download just means fetching the
+manifest, then fetching each listed chunk from blob storage in order.
+
+## Trade-offs
+
+<CompareTable
+  title="Design-level trade-offs"
+  rows={[
+    {
+      approach: "Block-level (chunked) sync vs. whole-file sync",
+      pros: [
+        "Chunked: only changed bytes transfer and store; whole-file: no manifest bookkeeping or reassembly logic needed",
+      ],
+      cons: [
+        "Chunked adds real complexity -- chunk manifests, reassembly, partial-upload tracking; whole-file re-sends the entire file for a one-byte change",
+      ],
+      chosenBecause:
+        "At this scale (10 EB raw, files edited far more often than they're first created), the bandwidth/storage savings dwarf the added bookkeeping cost",
+    },
+    {
+      approach: "Fixed-size vs. content-defined chunking",
+      pros: [
+        "Fixed-size: simpler and cheaper to compute; content-defined: dedup and delta quality hold up under real mid-file edits",
+      ],
+      cons: [
+        "Fixed-size loses nearly all dedup benefit on a mid-file insert; content-defined costs more CPU per upload to compute rolling-hash boundaries",
+      ],
+      chosenBecause:
+        "Mid-file edits (not just appends) are the common case for documents and code, where fixed-size chunking's dedup collapse would erase most of the storage win this system exists for",
+    },
+    {
+      approach: "Last-write-wins vs. conflicted-copy resolution",
+      pros: [
+        "LWW: simpler UX, no extra file ever appears; conflicted-copy: guarantees no silent data loss",
+      ],
+      cons: [
+        "LWW can silently discard a real edit on clock skew; conflicted-copy means the user occasionally has to manually reconcile two files",
+      ],
+      chosenBecause:
+        "Silently losing a user's file is worse than asking them, rarely, to pick between two saved copies -- the failure mode has to be visible, not invisible",
+    },
+    {
+      approach: "Long-polling vs. WebSocket for notifications",
+      pros: [
+        "Long-polling: simpler connection model, works through more restrictive networks; WebSocket: lowest latency, least per-notification overhead",
+      ],
+      cons: [
+        "Long-polling re-opens a request per cycle; WebSocket costs real server-side state to hold ~300M concurrent sockets and complicates load-balancing/failover",
+      ],
+      chosenBecause:
+        "Desktop clients are long-lived and mostly stay connected, where WebSocket's lower steady-state overhead wins; long-polling stays as the fallback for restrictive networks",
+    },
+    {
+      approach: "Strong metadata consistency vs. eventual blob replication",
+      pros: [
+        "Strong metadata: the file tree is never ambiguous; eventual blob: storage scales horizontally across regions cheaply",
+      ],
+      cons: [
+        "Strong consistency doesn't scale as cheaply horizontally; eventual replication would be unacceptable for the file tree itself",
+      ],
+      chosenBecause:
+        "The two halves of the system have genuinely different correctness requirements -- treating them uniformly would either over-pay for blob storage or under-guarantee the file tree",
+    },
+  ]}
+/>
+
+## Worked example: two devices, one file, offline and back
+
+A user has a 200MB video-editing project file synced across a laptop
+(Device A) and a desktop (Device B), both starting at version 1. Device A
+goes offline on a flight and the user trims a clip — a local edit that
+touches only a handful of chunks near the cut point, thanks to
+content-defined chunking. While A is still offline, the same user opens the
+project on Device B, adds a title card, and Device B — still connected —
+syncs its edit successfully as version 2.
+
+<D2Diagram
+  title="Device A offline, Device B syncs first, A reconnects into a conflict"
+  type="sequence"
+  chart={`shape: sequence_diagram
+
+DeviceA: "Device A"
+DeviceB: "Device B"
+Metadata: "Metadata Service"
+BlockService: "Block Service"
+
+DeviceB -> Metadata: "sync edit to 200MB file (online)"
+Metadata -> BlockService: "upload changed chunks"
+BlockService -> Metadata: "chunk-list manifest v2 (from B)"
+Metadata -> DeviceB: "ack: synced as v2"
+
+DeviceA -> Metadata: "reconnect, push local edit (based on v1)"
+Metadata -> Metadata: "detect diverging version pointer\\n(local base v1 != current v2)"
+Metadata -> DeviceA: "conflicted copy created:\\n'file (Device A's conflicted copy).mp4'"
+Metadata -> DeviceB: "sync hint: new conflicted copy exists"
+`}
+/>
+
+When Device A reconnects, its sync engine computes the delta for the trim
+edit exactly as it would have online — diffing local chunk hashes against
+the manifest it last knew about, which is still version 1. It uploads its
+changed chunks and asks the Metadata Service to commit them as the new
+version. The Metadata Service compares the base version A's request was
+built on (v1) against the file's actual current version (v2, from B) and
+finds they don't match: A's edit was made against a version of the file
+that no longer exists as the tip. Rather than silently overwrite B's
+title-card edit with A's trim, or silently drop A's trim in favor of B's
+edit, the server commits A's changed chunks as a **new file** — `project
+(Device A's conflicted copy).mp4` — leaving both edits fully intact. Both
+devices then get a notification hint; Device B's client pulls the delta and
+now sees two files where it previously synced one, and the user reconciles
+them manually (most often by re-applying the trim to the title-carded
+version).
+
+## Interview angle
+
+**"How would you support a file edited by many collaborators at once,
+live?"** This design assumes one editor at a time per file, with conflicts
+as the rare exception. True live co-editing — everyone's cursor and
+keystrokes visible to everyone else in real time — needs a fundamentally
+different approach: operational transform or CRDTs (conflict-free
+replicated data types) that merge concurrent character-level edits
+automatically, the way Google Docs works. That's a genuinely different
+problem (structured, mergeable text operations vs. opaque binary chunk
+diffs) and is explicitly out of scope here.
+
+**"How do you handle a file bigger than the disk space available on a
+phone?"** This is what "selective sync" solves: the metadata service always
+reflects the full file tree, but a mobile client can choose to keep only a
+subset of folders' actual content downloaded locally, showing the rest as
+placeholder/"online-only" entries. Opening a placeholder triggers an
+on-demand chunk download rather than requiring the whole account's content
+to fit on-device.
+
+**"How do you detect and recover from a corrupted or partial chunk
+upload?"** Content-addressing makes this cheap to catch: after a chunk
+uploads, the server re-hashes the received bytes and compares against the
+hash the client claimed to be uploading. A mismatch means corruption or a
+partial transfer, and the chunk is rejected and re-requested — the client
+never has to guess whether an upload silently truncated, since the hash
+either matches exactly or it doesn't.
+
+## Practice & Self-Check
+
+### Recap quiz
+
+<QuizItem
+  question="Why is content-defined chunking (rolling hash) preferred over fixed-size chunking for this system, specifically?"
+  answer="Because real edits are often mid-file inserts or deletes, not just appends. Fixed-size chunking's boundaries are at fixed byte offsets, so any mid-file insert shifts every later boundary and invalidates nearly every chunk's hash. Content-defined chunking anchors boundaries to local content patterns via a rolling hash, so they re-form at the same points on either side of an edit -- only the chunk(s) actually touching the edit change, which is what makes both delta sync and dedup work well under realistic editing."
+/>
+
+<QuizItem
+  question="What makes a chunk's storage key 'content-addressed', and why does that make cross-user dedup automatic?"
+  answer="The key is the SHA-256 hash of the chunk's own bytes, not an arbitrary ID assigned at upload time. Any two chunks with identical content -- regardless of which account uploaded them -- hash to the identical key, so the dedup check ('does this hash already exist?') naturally collapses duplicate content across accounts without needing any cross-account bookkeeping."
+/>
+
+<QuizItem
+  question="Why does deleting a file not necessarily delete its chunks from blob storage?"
+  answer="Chunks are reference-counted: multiple files (potentially owned by different accounts) can point to the same chunk hash. Deleting a file decrements the reference count for each of its chunks, but the underlying bytes are only actually removed once a chunk's reference count reaches zero -- otherwise deleting one file could corrupt another file that still references the same chunk."
+/>
+
+<QuizItem
+  question="Why does file metadata require a strongly consistent relational store while blob content can tolerate eventual consistency?"
+  answer="Metadata is the single canonical answer to 'what does this file tree look like right now,' and operations like a folder rename cascading to every child path must be atomic -- an ambiguous or partially-applied tree is a correctness bug every client would see. Blob chunks are immutable once written (their key is their own content hash, so nothing ever updates in place), so replicating a chunk a few seconds late causes no staleness problem -- there's nothing about it that could go stale."
+/>
+
+<QuizItem
+  question="Why does a naive last-write-wins timestamp comparison risk losing data, while a version-vector/version-counter comparison doesn't?"
+  answer="Timestamps depend on each device's local clock, which can drift or be simply wrong -- a device with a fast clock can make an older edit look newer and silently overwrite a genuinely newer one with no signal to the user. A version-counter compares the version a client's edit was based on against the server's actual current version, which has nothing to do with wall-clock time and reliably distinguishes a real conflict from a clock-skew artifact."
+/>
+
+<QuizItem
+  question="Why is a push notification treated as 'a hint, not the payload' in this design?"
+  answer="Because the notification channel isn't reliable in the way the metadata store is -- pushes can arrive out of order, duplicated, or get dropped. If the notification carried the actual change, any of those failure modes could corrupt sync state. Since it only ever triggers the client to pull the authoritative delta from the Metadata Service, a duplicated or dropped notification is harmless -- worst case is a redundant or slightly delayed pull, never a wrong state."
+/>
+
+<QuizItem
+  question="A file was edited on Device A while Device B was offline, then B reconnects and also tries to sync an edit based on the same starting version. What does the server do, and why not attempt an automatic merge?"
+  answer="It detects the diverging version pointers and saves the second writer's edit as a conflicted copy alongside the original, rather than attempting to merge the two. An automatic content merge is only safe for structured, line-based data a diff tool understands (like text); Dropbox syncs opaque binary files (photos, PDFs, project files) where there's no general-purpose way to combine two divergent versions without risking silently corrupting one of them."
+/>
+
+<QuizItem
+  question="A queued local edit from offline mode conflicts with a change that landed on the server while the device was offline. Does this need a special offline-specific resolution rule?"
+  answer="No -- replaying a queued edit uses the exact same delta-sync path a connected client would use, so if its base version doesn't match the server's current version, it hits the same version-vector conflict detection and conflicted-copy outcome already used for online conflicts. Offline support only changes when the sync attempt happens, not how conflicts are resolved."
+/>
+
+### Open design challenge
+
+**Extend the design to support shared team folders with per-user
+permissions and a shared version history.** So far this lesson has treated
+each file as belonging to one account's tree. A team folder is shared by
+multiple accounts, each of which may have different permissions (view-only
+vs. edit), and its version history has to reflect edits from any of those
+accounts, not just one owner. Design: how permissions are checked on each
+sync/download request without a per-file check becoming a bottleneck, how
+the metadata model changes to represent "this folder belongs to a team, not
+one account," how the conflict-detection and conflicted-copy logic already
+built in this lesson extends to *more than two* concurrent editors, and how
+you'd show a shared version history entry attributed to the correct editor.
+
+<details>
+<summary>Reference approach (click to reveal)</summary>
+
+- **Ownership model**: introduce a `SharedFolder` (or `Workspace`) entity
+  that owns a subtree of the file tree, decoupled from any single account's
+  root. Each account gets a `FolderMembership` row (`folder_id`, `user_id`,
+  `role: viewer | editor | owner`) rather than the folder itself belonging
+  to one account's metadata partition — this is the schema-level change
+  that makes "shared" a first-class concept instead of a bolt-on.
+- **Permission checks without a bottleneck**: cache each account's
+  role-per-shared-folder in the same request path that already resolves
+  which metadata shard to query (permission lookups are small, keyed by
+  `(user_id, folder_id)`, and change far less often than file content
+  does) — so a sync/download request pays one cheap cache lookup, not a
+  full-table permission scan, and a `viewer` role is enforced by rejecting
+  any write/sync-upload request before it reaches the chunk-upload path at
+  all.
+- **Extending conflict detection past two editors**: the version-vector
+  approach already generalizes — instead of comparing one base version
+  against one current version, the metadata service compares the syncing
+  client's base version against the *current* tip regardless of how many
+  distinct editors contributed to versions in between. A third or fourth
+  concurrent editor is handled identically to the two-device case already
+  built: whoever's sync request lands with a stale base version gets a
+  conflicted copy, no matter how many other editors are also touching the
+  folder.
+- **Shared version history**: each version-history entry already needs an
+  author; extend it to `(version, editor_user_id, chunk_manifest,
+  timestamp)` so every entry in the shared folder's history is attributed
+  to whichever account's device produced that version — the version chain
+  itself doesn't change, only who gets credited for each link in it.
+
+</details>
+
+<Rubric
+  items={[
+    "Introduced a shared-folder/workspace entity decoupled from a single account's file tree, rather than bolting sharing onto the existing per-account model",
+    "Modeled per-user roles/permissions on the shared folder (e.g. viewer vs. editor) and named where in the request path they get checked",
+    "Explained why the permission check doesn't become a per-request bottleneck (e.g. small cached lookup, not a full scan)",
+    "Extended the existing version-vector conflict detection to more than two concurrent editors without inventing a separate mechanism",
+    "Extended version history to attribute each version to the specific editor who produced it",
+  ]}
+/>
