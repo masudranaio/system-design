@@ -1,0 +1,938 @@
+---
+title: "Netflix: High-Level Design"
+---
+
+Netflix's hard problem isn't storing movies — it's that "press play" has
+to turn into a stream of bytes arriving faster than the screen consumes
+them, for hundreds of millions of people at once, on every kind of
+network from gigabit fiber to a congested mobile tower, without ever
+hitting a central server hard enough to notice.
+
+## Problem framing
+
+Video-on-demand at global scale is really two coupled problems wearing
+one UI:
+
+- **Getting bytes to the user fast and cheaply** — delivery: encoding,
+  segmenting, and a content-delivery network (CDN) that keeps the actual
+  video bytes physically close to the viewer.
+- **Getting the *right* bytes in front of the user** — catalog and
+  recommendations: knowing what exists, what's licensed where, and what
+  a given profile is likely to want to watch next.
+
+Most of this lesson follows that split, because the two problems have
+almost opposite engineering shapes.
+
+{/* concept-dependency: HLD-01 not yet built, explained inline */}
+Netflix's traffic pattern makes delivery the harder half. A playback
+session is **long-lived** (a two-hour film, not a 200ms API call),
+**resumable** (pausing and re-fetching from where you left off is
+normal, not an error case), and **progressively consumed** (the client
+only ever needs the *next* few seconds of video, not the whole file at
+once). Layer on a **highly skewed popularity distribution** — a new
+season of a hit show can account for a large share of an evening's total
+traffic, while most of the back catalog is watched rarely — and the
+dominant cost driver becomes bandwidth, not storage or database
+throughput. That's a different shape from, say, a social feed, where the
+hard problem is fanning out many small, unpredictable writes to many
+followers under ordering and consistency constraints. Here the write
+side (new titles published, viewing events recorded) is comparatively
+small and slow-changing; the read side is enormous, predictable in
+aggregate, and dominated by raw byte volume — which is why this system
+is a **caching/CDN problem first**, and a database-scale problem only
+second.
+
+<QuizItem
+  question="Why is Netflix's traffic pattern more of a CDN/caching problem than a database-scaling problem, unlike a social media feed?"
+  answer="Because the dominant cost and traffic driver is streaming large volumes of video bytes for long-lived sessions with a highly skewed, largely predictable popularity distribution — not a high rate of small, unpredictable writes. Getting popular video bytes physically close to viewers (CDN) does more for this system's scale problem than any database optimization could."
+/>
+
+## Requirements & capacity estimate
+
+**Functional requirements:**
+
+- Browse/search a personalized content catalog (titles, metadata,
+  artwork, episode listings)
+- Play a title with adaptive-bitrate streaming — quality shifts with
+  available bandwidth, no manual selection required
+- Resume playback from the last-watched position, per profile, across
+  devices
+- Personalized recommendation rows on the home screen ("Because You
+  Watched", "Top Picks")
+- Studio-to-catalog content pipeline: ingest a source master, encode the
+  full bitrate/resolution ladder, publish to the catalog once ready
+
+**Non-functional requirements:**
+
+- Low playback startup latency — low single-digit seconds from pressing
+  play to first frame
+- Low rebuffer ratio (fraction of playback time stalled waiting for
+  data), even on constrained or variable networks
+- Global scale: hundreds of millions of concurrent streaming sessions,
+  most viewing hours served from near-edge/ISP-embedded caches, not a
+  central origin
+- High origin cache-hit ratio — the origin (object storage + control
+  plane) must not bottleneck popular, predictable-demand content
+- Bandwidth-cost awareness — video is the dominant cost driver, so
+  encoding efficiency and cache placement both matter economically, not
+  just for latency
+- Multi-region availability — a regional outage shouldn't take down
+  playback globally
+
+**Out of scope for this lesson:** DRM/licensing legal details (Widevine/
+FairPlay/PlayReady are named as the mechanism, not explained
+cryptographically), the ML ranking model's internals, billing/account
+management, and live/linear streaming — this lesson is video-on-demand
+only.
+
+<KeyStat
+  value="~150-600 Tbps"
+  label="aggregate egress bandwidth demanded at global peak"
+  detail="~30-120 million concurrent streams (a plausible range for a service with hundreds of millions of subscribers, most active during evening peak) x ~5 Mbps average bitrate (a mix of SD, HD, and 4K sessions) = 150,000,000-600,000,000 Mbps of instantaneous demand. No single data center's network egress — or its transit links to the public internet — is provisioned anywhere near that range, let alone affordable at that scale from commercial CDN pricing. That number is what rules out serving primarily from centralized origin servers and makes an ISP-embedded edge-cache network (the CDN deep dive below) a structural requirement, not an optimization."
+/>
+
+## Architecture
+
+<D2Diagram
+  title="Netflix system architecture"
+  type="architecture"
+  chart={`
+direction: right
+
+Client: "Client\\n(TV / mobile / web)" {
+  style.fill: "#3b6fd6"
+  style.stroke: "#3b6fd6"
+  style.font-color: "#ffffff"
+  icon: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxyZWN0IHdpZHRoPSIxNCIgaGVpZ2h0PSIyMCIgeD0iNSIgeT0iMiIgcng9IjIiIHJ5PSIyIi8+PHBhdGggZD0iTTEyIDE4aC4wMSIvPjwvc3ZnPg=="
+}
+Edge: "Edge / CDN\\n(Open-Connect-style)" {
+  style.fill: "#5b4fbf"
+  style.stroke: "#5b4fbf"
+  style.font-color: "#ffffff"
+  icon: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxjaXJjbGUgY3g9IjEyIiBjeT0iMTIiIHI9IjEwIi8+PHBhdGggZD0iTTIgMTJoMjAiLz48cGF0aCBkPSJNMTIgMmExNS4zIDE1LjMgMCAwIDEgNCAxMCAxNS4zIDE1LjMgMCAwIDEtNCAxMCAxNS4zIDE1LjMgMCAwIDEtNC0xMCAxNS4zIDE1LjMgMCAwIDEgNC0xMHoiLz48L3N2Zz4="
+}
+Gateway: "API Gateway" {
+  style.fill: "#5b4fbf"
+  style.stroke: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+Catalog: "Catalog / Metadata\\nService" {
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+CatalogDB: "Catalog store\\n(replicated, cached)" {
+  shape: cylinder
+  style.fill: "#b23a48"
+  style.stroke: "#b23a48"
+  style.font-color: "#ffffff"
+}
+Streaming: "Streaming / Playback\\nService" {
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+Recs: "Recommendation\\nService" {
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+RecsCache: "Per-profile row cache" {
+  shape: cylinder
+  style.fill: "#b23a48"
+  style.stroke: "#b23a48"
+  style.font-color: "#ffffff"
+}
+Profile: "User / Profile\\nService" {
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+ProfileDB: "Profile + resume-state DB" {
+  shape: cylinder
+  style.fill: "#b23a48"
+  style.stroke: "#b23a48"
+  style.font-color: "#ffffff"
+}
+
+Client -> Edge: "video segments"
+Client -> Gateway: "browse / play / resume"
+Gateway -> Catalog: "title lookup"
+Gateway -> Streaming: "manifest request"
+Gateway -> Recs: "home screen rows"
+Gateway -> Profile: "resume position"
+Catalog -> CatalogDB
+Streaming -> Catalog: "resolve title -> manifest"
+Recs -> RecsCache
+Profile -> ProfileDB
+`}
+/>
+
+Video bytes never route through the API gateway — the client fetches
+segments directly from the nearest edge cache, shown as a separate arrow
+from `Client`. Everything the gateway *does* handle (browsing, starting
+playback, resuming, recommendations) is metadata and control-plane
+traffic: small requests, answered from services that each own their own
+datastore, scaled independently of the video-delivery path. That
+separation is the single most important structural decision in this
+architecture — it's why a catalog database having a bad day doesn't
+touch anyone's already-playing video.
+
+{/* concept-dependency: HLD-03 not yet built, explained inline */}
+The API Gateway is a fleet of stateless instances behind an L7
+(application-layer) load balancer, routing by request path to the right
+backend service — the same shape as any other web-scale API tier. It's
+deliberately the least interesting box in this diagram: nothing about
+Netflix's hard scaling problem lives here, which is exactly the point of
+the split above.
+
+## Deep dives
+
+### Upload & transcoding pipeline
+
+Before any of the architecture above matters, a title has to get from a
+studio's source master into a form the streaming service can hand out.
+
+<D2Diagram
+  title="Studio master to published catalog entry"
+  type="architecture"
+  chart={`
+direction: right
+
+Studio: "Studio upload\\n(source master)" {
+  style.fill: "#3b6fd6"
+  style.stroke: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+Storage: "Object storage\\n(source masters)" {
+  shape: cylinder
+  style.fill: "#b23a48"
+  style.stroke: "#b23a48"
+  style.font-color: "#ffffff"
+}
+Workers: "Distributed encoding\\nworkers" {
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+Segmenter: "Segmenter +\\nmanifest generator" {
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+CatalogPublish: "Catalog Service\\n(publish)" {
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+
+Studio -> Storage: "upload master"
+Storage -> Workers: "fan out encode jobs\\n(per rung)"
+Workers -> Segmenter: "encoded renditions"
+Segmenter -> CatalogPublish: "segments + HLS/DASH manifest"
+CatalogPublish -> Storage: "segments written to origin"
+`}
+/>
+
+Encoding a full bitrate ladder for one title is embarrassingly parallel
+— each rung (and, with per-shot encoding, each shot within a rung) is an
+independent job — so this fans out across many worker machines rather
+than encoding rungs sequentially on one box. A title only becomes
+visible in the catalog once every rung it needs has finished encoding
+and the manifest referencing them has been generated; a partially
+encoded title publishing early would let a client request a rung that
+doesn't exist yet.
+
+### Encoding & the bitrate ladder
+
+How the ladder itself gets built has three escalating approaches:
+
+- **Fixed ladder** — every title gets the same fixed set of
+  resolution/bitrate pairs. Simple, but wasteful: a static talking-head
+  drama and a fast-cut action movie don't need the same bits to look
+  equally good at a given resolution.
+- **Per-title encoding** — analyze each title's visual complexity first
+  (motion, detail, noise) and pick the *minimum* bitrate per resolution
+  rung that still clears a quality bar, instead of a one-size-fits-all
+  number. An animated film with flat colors and little motion can hit
+  the same perceived quality at a much lower bitrate than a high-action
+  film — Netflix's own published results put per-title savings at
+  roughly 15-20% in encoded bits for the same perceptual quality, with
+  no visible difference to the viewer.
+- **Per-shot (per-scene) encoding** — go finer than per-title: a single
+  film has quiet dialogue scenes and explosive action scenes, so encode
+  *each shot* at its own optimal point rather than one ladder for the
+  whole runtime. This captures savings per-title encoding misses because
+  per-title only optimizes at the whole-title granularity.
+
+<Point icon="branch">
+  Why animation and a high-action film can't share a ladder: a fixed
+  ladder is sized for the hardest case (fast motion, high detail) across
+  the whole catalog, so anything simpler than that wastes bits it didn't
+  need — multiplied across every playback of every low-complexity title,
+  that waste is real money at Netflix's delivery volume.
+</Point>
+
+<QuizItem
+  question="A fixed bitrate ladder gives a minimalist animated short and a fast-action blockbuster the exact same 1080p bitrate. What's the downside?"
+  answer="The animated short is over-encoded — it could hit the same perceived quality at a meaningfully lower bitrate, since it has far less motion/detail complexity. That wasted bitrate costs storage and, more importantly, delivery bandwidth on every single playback, which per-title encoding fixes by picking each title's own minimum sufficient bitrate per rung."
+/>
+
+### Segmenting & manifests
+
+Video isn't streamed as one giant file — it's chopped into short
+**segments**, typically 2-10 seconds each. Two reasons this matters:
+
+- **Quality switching mid-playback**: if the network gets worse three
+  minutes in, the client can start fetching the *next segment* at a
+  lower rung without restarting playback or re-downloading anything
+  already watched. A single monolithic file would force an all-or-
+  nothing quality choice made once, upfront.
+- **Fast, resumable startup**: the player only needs the first segment
+  before it can start decoding and showing frames — not the whole title.
+
+A **manifest** is the index tying it together: for a given title, it
+lists every available bitrate rung and the URLs (or URL templates) for
+each rung's segments. Two manifest formats dominate:
+
+<CompareTable
+  title="HLS vs. DASH manifest formats"
+  rows={[
+    {
+      approach: "HLS (.m3u8)",
+      pros: ["Native support on Apple platforms (iOS, Safari, tvOS) with no extra player library", "Simple, widely understood text format"],
+      cons: ["Historically tied to specific codec/container conventions (though modern HLS has broadened)"],
+      chosenBecause: "required for iOS/Apple TV playback, no viable substitute there",
+    },
+    {
+      approach: "DASH (.mpd)",
+      pros: ["Codec-agnostic (works with H.264, VP9, AV1, HEVC)", "Wider flexibility across custom players and non-Apple ecosystems"],
+      cons: ["No native OS-level playback support — needs a player library (e.g. Shaka Player, dash.js)"],
+    },
+  ]}
+/>
+
+In practice a service like Netflix serves both — the manifest format is
+chosen per client platform, not once globally, since the two formats
+solve the same problem for different device ecosystems rather than
+competing head-to-head.
+
+<QuizItem
+  question="Why does chunking video into short segments matter for adaptive bitrate streaming specifically, beyond just faster startup?"
+  answer="Because it lets the client switch quality mid-playback by fetching the next segment at a different bitrate rung, without restarting or re-downloading what's already played. A single unsegmented file would force one quality decision for the entire session."
+/>
+
+### CDN edge caching deep dive
+
+This is where the aggregate egress number from the capacity estimate
+gets solved. Netflix's real system (Open Connect) runs appliances
+physically racked inside ISP networks and internet exchange points — the
+video bytes for a popular title are often only one network hop from the
+viewer, never crossing the public internet back to a central origin at
+all.
+
+<D2Diagram
+  title="CDN: nightly proactive fill (predictable demand)"
+  type="architecture"
+  chart={`
+direction: right
+
+Origin: "Origin\\n(object storage)" {
+  shape: cylinder
+  style.fill: "#b23a48"
+  style.stroke: "#b23a48"
+  style.font-color: "#ffffff"
+}
+Shield: "Origin shield /\\nregional tier" {
+  style.fill: "#5b4fbf"
+  style.stroke: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+Edge: "ISP-embedded\\nedge cache" {
+  style.fill: "#b8722a"
+  style.stroke: "#b8722a"
+  style.font-color: "#ffffff"
+}
+
+Origin -> Shield: "off-peak: push\\npredicted-popular titles"
+Shield -> Edge: "off-peak: fill overnight"
+`}
+/>
+
+<D2Diagram
+  title="CDN: cache-miss pull path (rare)"
+  type="architecture"
+  chart={`
+direction: right
+
+Client: "Client" {
+  style.fill: "#3b6fd6"
+  style.stroke: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+Edge: "ISP-embedded\\nedge cache" {
+  style.fill: "#b8722a"
+  style.stroke: "#b8722a"
+  style.font-color: "#ffffff"
+}
+Shield: "Origin shield /\\nregional tier" {
+  style.fill: "#5b4fbf"
+  style.stroke: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+Origin: "Origin\\n(object storage)" {
+  shape: cylinder
+  style.fill: "#b23a48"
+  style.stroke: "#b23a48"
+  style.font-color: "#ffffff"
+}
+
+Client -> Edge: "GET segment"
+Edge -> Shield: "miss: fetch"
+Shield -> Origin: "miss: fetch"
+Origin -> Shield: "segment bytes"
+Shield -> Edge: "segment bytes\\n(now cached regionally)"
+Edge -> Client: "segment bytes\\n(now cached at edge)"
+`}
+/>
+
+*Both diagrams show the same three tiers; the difference is which one
+initiates the transfer. Proactive fill is the dominant path in steady
+state — the pull path only fires for genuinely unpredictable demand (a
+title nobody forecast, or a fresh edge node that hasn't been seeded
+yet).*
+
+{/* concept-dependency: HLD-06 not yet built, explained inline */}
+Three mechanisms make this tier work, each solving a distinct problem:
+
+- **Proactive/scheduled fill vs. reactive pull-on-miss.** Netflix
+  precomputes which titles are likely to be popular in each region over
+  the next day (using viewing history and upcoming-release signals) and
+  pushes those titles to edge caches during off-peak overnight hours,
+  when spare ISP bandwidth is cheap and plentiful. This is viable
+  specifically *because* video popularity is predictable in aggregate —
+  a new season's premiere or a long-running catalog favorite has a
+  forecastable demand curve, unlike a one-off viral social post. Reactive
+  pull-on-miss still exists as a fallback for the unpredictable tail, but
+  it's the exception, not the steady-state path.
+- **Cache invalidation on a new release or a content fix.** A blanket
+  cache flush would be catastrophic at this scale — it would force every
+  edge node to re-pull from origin simultaneously, recreating exactly
+  the thundering-herd problem caching exists to avoid. Instead, content
+  versions get their own **versioned cache keys** (e.g. a content hash
+  or version suffix baked into the segment/manifest URL) so a corrected
+  encode is simply a *new* object at a new URL — old cached copies age
+  out normally, and only the specific title that changed gets
+  selectively re-filled, not the whole cache.
+- **Origin shield / multi-tier caching.** Thousands of edge nodes all
+  hitting the origin directly on a miss would still overwhelm it, even
+  if each individual node's miss rate is low — the aggregate is the
+  problem. A regional shield tier sits between edge nodes and the
+  origin: it absorbs and *coalesces* misses from many edge nodes in a
+  region into far fewer requests reaching origin, and itself caches the
+  result so the second edge node's miss in that region never reaches
+  origin at all.
+
+<QuizItem
+  question="Why is proactive CDN fill viable for Netflix's video catalog but wouldn't work well for, say, a live social media feed?"
+  answer="Because video popularity is forecastable in aggregate — viewing history and release schedules predict which titles will be in demand tomorrow, so pre-filling overnight during cheap off-peak bandwidth pays off. A social feed's content is unpredictable and constantly changing, so there's nothing reliable to forecast and pre-fill."
+/>
+
+### Adaptive bitrate algorithm
+
+The client, not the server, decides which bitrate rung to fetch next —
+it has the information the server doesn't (its own real-time buffer
+state and observed throughput). Two families of decision logic:
+
+<CompareTable
+  title="ABR decision strategies"
+  rows={[
+    {
+      approach: "Throughput-based",
+      pros: ["Reacts quickly to a sudden bandwidth change", "Intuitive: measure recent download speed, pick the highest rung that fits"],
+      cons: ["Noisy — a single slow segment can trigger an unnecessary quality drop", "Doesn't directly account for how much buffer is already banked"],
+    },
+    {
+      approach: "Buffer-based (e.g. BOLA-style)",
+      pros: ["Uses buffer occupancy as the primary signal — a fuller buffer tolerates a riskier, higher-quality choice", "Smoother quality changes, fewer needless downgrades from transient blips"],
+      cons: ["Slower to react to a real, sustained bandwidth drop if the buffer is still comfortably full"],
+      chosenBecause: "real ABR players blend both signals rather than picking one exclusively",
+    },
+  ]}
+/>
+
+<D2Diagram
+  title="ABR client-side decision loop"
+  type="architecture"
+  chart={`
+direction: right
+
+Monitor: "Buffer + throughput\\nmonitor" {
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+Decide: "Bitrate-selection\\ndecision" {
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+Manifest: "Manifest\\n(available rungs)" {
+  style.fill: "#5b4fbf"
+  style.stroke: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+Fetch: "Fetch next segment\\nat chosen rung" {
+  style.fill: "#b8722a"
+  style.stroke: "#b8722a"
+  style.font-color: "#ffffff"
+}
+
+Monitor -> Decide: "buffer level,\\nrecent throughput"
+Manifest -> Decide: "available rungs"
+Decide -> Fetch: "chosen bitrate"
+Fetch -> Monitor: "updates buffer state\\n(loop, every segment)"
+`}
+/>
+
+Every few seconds, this loop is balancing one trade-off: pick a rung too
+aggressively high and risk a stall (rebuffer) if throughput doesn't hold
+up; pick too conservatively low and the viewer gets unnecessarily soft
+video despite having bandwidth to spare. Rebuffering is the worse of the
+two failure modes from a viewer-experience standpoint — a brief quality
+dip is barely noticed, a stall is not — which is why most real ABR
+algorithms are deliberately biased to err toward the safer, lower rung at
+startup (a low-risk initial choice, stepping up once buffer is banked)
+rather than opening at the highest bitrate the current throughput sample
+suggests.
+
+<QuizItem
+  question="Why do most ABR clients start playback at a conservative, lower bitrate rather than the highest one the initial throughput sample supports?"
+  answer="Because a rebuffer (stall) hurts the viewing experience far more than a temporarily softer picture, and the client has no buffer banked yet at startup to absorb a misjudged throughput estimate. Starting low and stepping up once buffer builds trades a small, unnoticed quality cost for protection against an early stall."
+/>
+
+### Catalog/metadata service design
+
+The catalog is a **read-heavy, globally replicated** dataset: titles,
+artwork variants (different thumbnails per locale/A-B test), episode
+listings, and — critically — **regional availability** (a title licensed
+in one country may not be licensed in another). It's served from caches
+in front of a source-of-truth store, the same read-scaling shape as any
+high-traffic, low-write content system.
+
+<D2Diagram
+  title="Catalog resolves a playback request to a manifest"
+  type="er"
+  chart={`
+direction: right
+
+Title: {
+  shape: sql_table
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+  id: int {constraint: primary_key}
+  region_availability: text
+}
+Asset: {
+  shape: sql_table
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+  id: int {constraint: primary_key}
+  title_id: int {constraint: foreign_key}
+}
+Manifest: {
+  shape: sql_table
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+  id: int {constraint: primary_key}
+  asset_id: int {constraint: foreign_key}
+  cdn_url_template: text
+}
+
+Title -> Asset: "one title, one or more assets\\n(dub/sub variants)"
+Asset -> Manifest: "one asset, one manifest\\nper bitrate ladder"
+`}
+/>
+
+A playback request resolves through exactly this chain: the client asks
+for a title, the catalog service checks the requesting profile's region
+against `region_availability`, resolves the right `Asset` (e.g. the
+correct dub/subtitle track set), and returns that asset's `Manifest` —
+which is what actually contains the CDN URL template the player uses to
+start fetching segments. Regional availability is deliberately a
+**catalog-service concern**, not a CDN concern: the CDN doesn't know or
+care about licensing, it just serves whatever segment URL it's asked
+for — access control happens one layer up, before a URL is ever handed
+to a client.
+
+{/* concept-dependency: HLD-07 not yet built, explained inline */}
+Because reads so heavily outweigh writes here, the source-of-truth store
+is typically fronted by read replicas and a caching layer (cache-aside:
+check cache, fall back to the store on a miss, populate on the way back)
+rather than optimized for write throughput — the opposite bias from the
+booking-style write path a case study like Ticketmaster needs.
+
+<QuizItem
+  question="Why does the catalog service check region availability rather than the CDN refusing to serve a segment in a region it's not licensed for?"
+  answer="Because the CDN's job is pure byte delivery — it has no concept of licensing windows or regional rights. Access control has to happen before a client is ever handed a segment URL, which is why region_availability lives on the Title record the catalog service checks, not as CDN-layer logic."
+/>
+
+### Recommendations at a high level
+
+Home-screen personalization splits into two distinct problems solved
+differently:
+
+- **Candidate generation** — which titles could plausibly be shown to
+  this profile at all (out of the entire catalog)? This narrows a huge
+  space down to a manageable shortlist per row/theme.
+- **Ranking** — given a shortlist, what order should they appear in for
+  *this* profile specifically? This is where per-user personalization
+  signal (watch history, ratings, similar-profile behavior) does the
+  heavy lifting.
+
+<D2Diagram
+  title="Recommendation pipeline shape"
+  type="architecture"
+  chart={`
+direction: right
+
+Events: "Viewing-event\\ningestion" {
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+Stream: "Event stream" {
+  shape: queue
+  style.fill: "#4b5262"
+  style.stroke: "#4b5262"
+  style.font-color: "#ffffff"
+}
+Batch: "Offline candidate\\ngeneration + ranking" {
+  style.fill: "#0e7c86"
+  style.stroke: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+RowCache: "Per-profile\\nrow cache" {
+  shape: cylinder
+  style.fill: "#b23a48"
+  style.stroke: "#b23a48"
+  style.font-color: "#ffffff"
+}
+Home: "Home screen\\n(read path)" {
+  style.fill: "#3b6fd6"
+  style.stroke: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+
+Events -> Stream: "watch/pause/rate events"
+Stream -> Batch: "nightly/hourly batch job"
+Batch -> RowCache: "precomputed rows per profile"
+RowCache -> Home: "fast read, no live scoring"
+`}
+/>
+
+{/* concept-dependency: HLD-05 not yet built, explained inline */}
+Most personalized rows are **precomputed offline**: a batch job scores
+candidates per profile on a schedule (hourly or nightly, not per
+request) and writes the results to a fast-read cache, so opening the app
+never waits on a model inference call — it's a cache read, same latency
+profile as any other cached page load. Some signal is layered in
+**online** for freshness (e.g. re-ranking based on what was just watched
+in this session), but the heavy candidate-generation and full-catalog
+scoring work stays offline because running it per-request, per-profile,
+against the whole catalog would be far too slow and expensive to serve
+on the home-screen's latency budget.
+
+**"Continue Watching" is a different, simpler code path** on purpose: it
+isn't ML-ranked at all, just a **recency-ordered list** of titles with a
+non-null resume position for that profile, event-driven off the same
+watch-progress writes that power the resume-playback feature itself. It
+doesn't need candidate generation or ranking because the ordering
+question ("what did I watch most recently") is already fully answered
+by a timestamp, not a model.
+
+<QuizItem
+  question="Why is 'Continue Watching' not part of the ML-ranked recommendation pipeline?"
+  answer="Because its ordering (most recently watched first) is a simple, deterministic fact already captured by the resume-position timestamp — there's no candidate-generation or ranking problem to solve, so routing it through the recommendation pipeline would just add latency and complexity for no benefit."
+/>
+
+## Trade-offs
+
+<CompareTable
+  title="Push (proactive) vs. pull (reactive) CDN caching"
+  rows={[
+    {
+      approach: "Push (proactive fill)",
+      pros: ["Popular content is already at the edge before it's requested — no first-viewer latency penalty", "Fills happen off-peak, using cheap spare bandwidth"],
+      cons: ["Requires accurate demand forecasting — a mispredicted title wastes edge storage", "Doesn't help with genuinely unpredictable, long-tail demand"],
+      chosenBecause: "video popularity is forecastable in aggregate at Netflix's scale, so most demand is covered proactively",
+    },
+    {
+      approach: "Pull (reactive, cache-on-miss)",
+      pros: ["No forecasting needed — naturally adapts to whatever is actually requested", "Simple, standard CDN behavior"],
+      cons: ["First requester after a miss pays the full origin round-trip latency", "A popularity spike right after a cache-key change can cause many simultaneous misses"],
+    },
+  ]}
+/>
+
+<CompareTable
+  title="Pre-transcode the full bitrate ladder vs. transcode on demand"
+  rows={[
+    {
+      approach: "Pre-transcode upfront",
+      pros: ["Playback never waits on encoding — every rung is ready before publish", "Encoding cost is paid once, amortized across every future playback"],
+      cons: ["Storage cost for every rung of every title, even rarely-watched ones", "A slower path to publish — the full ladder must finish before a title goes live"],
+      chosenBecause: "playback-time encoding latency would violate the low single-digit second startup-latency requirement",
+    },
+    {
+      approach: "Transcode on demand",
+      pros: ["No wasted encoding work for a rung nobody ever requests", "Faster initial publish — only encode what's actually asked for"],
+      cons: ["First playback at a given rung pays encoding latency, unacceptable for a startup-latency-sensitive product", "Encoding compute cost is unpredictable and spiky instead of a scheduled batch workload"],
+    },
+  ]}
+/>
+
+<CompareTable
+  title="HLS vs. DASH as the manifest/segmenting format"
+  rows={[
+    {
+      approach: "HLS",
+      pros: ["Native OS-level support on Apple platforms", "Mature, widely deployed ecosystem"],
+      cons: ["Less codec flexibility historically"],
+      chosenBecause: "mandatory for iOS/tvOS/Safari playback, no viable substitute there",
+    },
+    {
+      approach: "DASH",
+      pros: ["Codec-agnostic — works with newer, more efficient codecs like AV1", "Greater flexibility for custom player implementations"],
+      cons: ["Needs a player library on every platform, no native OS support"],
+      chosenBecause: "preferred elsewhere for its codec flexibility and lower long-run bandwidth cost",
+    },
+  ]}
+/>
+
+<CompareTable
+  title="Precomputed (offline) vs. real-time (online) recommendation rows"
+  rows={[
+    {
+      approach: "Precomputed (offline)",
+      pros: ["Home screen loads at cache-read latency — no inference call on the critical path", "Batch scoring is far cheaper per-profile than live inference at this scale"],
+      cons: ["Rows can be stale by up to a batch cycle (e.g. hours) — a just-finished episode isn't instantly reflected"],
+      chosenBecause: "home-screen load-latency budget can't absorb a live full-catalog scoring pass per request",
+    },
+    {
+      approach: "Real-time (online) ranking",
+      pros: ["Immediately reflects the most recent session's signal", "No staleness window"],
+      cons: ["Far more expensive to run per-request at hundreds of millions of daily active profiles", "Adds inference latency directly to the home-screen load path"],
+      chosenBecause: "used selectively as a thin re-ranking layer on top of offline rows, not as the primary mechanism",
+    },
+  ]}
+/>
+
+<CompareTable
+  title="Origin-shield/multi-tier caching vs. every edge hitting origin directly"
+  rows={[
+    {
+      approach: "Origin shield (multi-tier)",
+      pros: ["Coalesces many edge nodes' misses in a region into far fewer origin requests", "Origin load stays roughly proportional to the number of distinct regional misses, not the number of edge nodes"],
+      cons: ["Adds one extra hop's latency on a genuine cache miss"],
+      chosenBecause: "protects the origin from thousands of edge nodes independently re-fetching the same miss",
+    },
+    {
+      approach: "Direct-to-origin on every edge miss",
+      pros: ["One fewer hop, marginally lower miss latency"],
+      cons: ["Origin load scales with the number of edge nodes, not just distinct content — a release-day spike could overwhelm it"],
+    },
+  ]}
+/>
+
+## Worked example: one playback session, start to mid-session upshift
+
+A viewer on a moderately congested home Wi-Fi network presses play on an
+episode. Trace what happens from that click to the client stepping up to
+a higher-quality segment once the network turns out better than the
+opening estimate.
+
+<D2Diagram
+  title="Playback session: manifest resolution through mid-session bitrate upshift"
+  type="sequence"
+  chart={`
+shape: sequence_diagram
+Client: "Client"
+Streaming: "Streaming Service"
+Catalog: "Catalog Service"
+Edge: "Edge Cache"
+
+Client -> Streaming: "play title_9214"
+Streaming -> Catalog: "resolve title -> manifest"
+Catalog -> Streaming: "manifest URL (bitrate ladder)"
+Streaming -> Client: "manifest"
+Client -> Client: "ABR picks low-risk\\ninitial rung (e.g. 720p)"
+Client -> Edge: "GET segment_001 (720p)"
+Edge -> Client: "segment_001 bytes (cache hit)"
+Client -> Client: "buffer builds,\\nthroughput improves"
+Client -> Edge: "GET segment_012 (1080p)"
+Edge -> Client: "segment_012 bytes (cache hit)"
+`}
+/>
+
+The client never asks the streaming service for permission to change
+quality mid-playback — it just requests a different rung's segment URL
+from the same manifest it already has. That's the entire point of the
+manifest holding every rung's URLs upfront: a quality change is a
+client-local decision followed by an ordinary CDN fetch, not a new round
+trip to any backend service. Both segment fetches above hit the edge
+cache directly — the streaming and catalog services are only involved
+once, at the very start, to resolve which manifest to use; they're off
+the critical path for every segment fetch that follows.
+
+<QuizItem
+  question="After the initial manifest is fetched, does stepping up to a higher bitrate mid-playback require another round trip to the Streaming Service?"
+  answer="No — the manifest already lists every rung's segment URLs upfront, so the client just requests a different rung directly from the edge cache. The Streaming and Catalog services are only involved once, at session start, to resolve which manifest to use."
+/>
+
+## Interview angle
+
+**"A title just released and everyone wants it at once — how does the
+CDN avoid a thundering-herd miss storm on the origin?"** This is exactly
+what proactive fill exists to prevent: a hotly anticipated release is a
+*forecastable* spike, so it's pre-pushed to edge nodes ahead of its
+release time, meaning the vast majority of day-one requests are cache
+hits from the start rather than misses. For the residual unpredictable
+tail (a smaller title unexpectedly going viral), the origin-shield tier
+coalesces concurrent misses from many edge nodes into far fewer origin
+requests, so even an imperfect forecast doesn't translate into origin
+load scaling with edge-node count.
+
+**"The user's network drops mid-playback — walk through what the client
+and server each do."** The client's buffer/throughput monitor detects
+the throughput collapse (or outright fetch failures) and its ABR logic
+immediately steps down to a lower, safer bitrate rung — or, if the
+connection is fully gone, keeps retrying the current segment against the
+buffered playback runway it has left before the screen has to show a
+spinner. On the server side, nothing proactively "knows" the user
+dropped — there's no persistent connection to lose. The edge cache and
+streaming service are stateless with respect to any one session; the
+next request that does arrive (a retry, or a resumed connection) is
+served exactly like any other segment fetch, with no reconnection
+handshake beyond ordinary HTTP.
+
+**"How would you extend this to support live/linear content?"** This
+probes exactly which VOD assumptions break. Segments don't exist ahead
+of time for a live stream — they're produced continuously as the
+broadcast happens, so proactive fill (which assumes the content already
+exists to be pushed) doesn't apply; instead, each new segment has to
+propagate edge-ward within a couple of seconds of being encoded, a much
+tighter latency budget than VOD's cache-ahead-of-demand model. The
+manifest also becomes a live, growing document instead of a fixed one,
+and ABR's buffer-based strategies need adjusting since a live stream
+can't let the client buffer arbitrarily far ahead without introducing
+broadcast delay.
+
+## Practice & Self-Check
+
+### Recap quiz
+
+<QuizItem
+  question="Why does per-title encoding save bandwidth compared to a fixed bitrate ladder?"
+  answer="A fixed ladder sizes every title's bitrate for the hardest case (high motion/detail), so simpler content gets more bits than it needs to hit the same perceived quality. Per-title encoding analyzes each title's actual complexity and picks the minimum sufficient bitrate per resolution rung, cutting wasted bits without a visible quality loss."
+/>
+
+<QuizItem
+  question="What role does the manifest (HLS .m3u8 or DASH .mpd) play in adaptive bitrate streaming?"
+  answer="It's the index listing every available bitrate rung and its segment URLs for a title. The client uses it to switch quality mid-playback by requesting a different rung's segments directly, without a new round trip to any backend service or restarting playback."
+/>
+
+<QuizItem
+  question="Why is proactive (push) CDN fill the dominant path at Netflix's scale, with reactive pull-on-miss as only a fallback?"
+  answer="Because video popularity is forecastable in aggregate from viewing history and release schedules, so most demand can be pre-filled to edge nodes during cheap off-peak bandwidth. Reactive pull only has to cover the smaller, genuinely unpredictable tail of demand."
+/>
+
+<QuizItem
+  question="What signal does the client's ABR logic primarily use to decide the next segment's bitrate, and why does it start conservatively?"
+  answer="It combines recent measured throughput and current buffer occupancy. It starts at a conservative, lower rung because there's no buffer banked yet at startup to absorb a bad throughput estimate, and a rebuffer/stall hurts the viewing experience far more than a briefly softer picture."
+/>
+
+<QuizItem
+  question="Why does an origin shield tier matter even if any single edge node's cache-miss rate is low?"
+  answer="The problem is aggregate, not per-node: thousands of edge nodes each having a low miss rate still adds up to origin load that scales with the number of edge nodes. The shield tier coalesces misses from many edge nodes in a region into far fewer requests that actually reach origin."
+/>
+
+<QuizItem
+  question="A new corrected encode is published for a title already cached at thousands of edge nodes. Why doesn't this require flushing the whole CDN cache?"
+  answer="Because content is addressed by versioned cache keys — the corrected encode is a new object at a new URL, not an overwrite of the old one. Old cached copies simply age out normally while only the specific changed title gets selectively re-filled."
+/>
+
+<QuizItem
+  question="Why is 'Continue Watching' built as a separate, simpler code path instead of going through the ML recommendation pipeline?"
+  answer="Its ordering (most recently watched first) is fully determined by the resume-position timestamp already being written for the resume-playback feature — there's no candidate-generation or ranking problem to solve, so routing it through the heavier ML pipeline would only add latency for no benefit."
+/>
+
+<QuizItem
+  question="Why is regional content availability checked by the catalog service rather than enforced by the CDN?"
+  answer="The CDN's only job is byte delivery — it has no concept of licensing windows or regional rights. Access control has to happen before a client is ever handed a segment URL, so region_availability lives on the catalog's Title record, checked at manifest-resolution time."
+/>
+
+### Open design challenge
+
+**Design the resume-playback ("Continue Watching") feature so it works
+correctly across devices with the least possible write latency.** A
+viewer pauses a show on their phone at the 14-minute mark, then opens a
+smart TV app for the same profile a minute later and expects it to offer
+resuming from roughly that same point — without playback feeling laggy
+on the device that's actively writing progress. What data model captures
+watch position per profile per title? How often should the playing
+device write progress, and does every write need to be durable
+immediately, or can some be batched? What happens if the same profile is
+watching the same title simultaneously on two devices (a shared family
+profile) — whose position wins? How does a device know a fresher
+position exists somewhere else when it opens the app?
+
+<details>
+<summary>Reference approach (click to reveal)</summary>
+
+- **Data model**: a `WatchProgress` record keyed by `(profile_id,
+  title_id)` — not per-device — storing `position_seconds`,
+  `updated_at`, and the `device_id` that made the last write. Keying by
+  profile+title (not profile+title+device) is what makes cross-device
+  resume automatic: there's exactly one current position per title per
+  profile to read, not one per device to merge.
+- **Write frequency and durability**: the playing device writes progress
+  on a short interval (e.g. every 10-30 seconds) plus on pause/stop/app-
+  background — not on every frame. These periodic writes don't need to
+  be synchronously durable on the critical path of playback itself (a
+  lost update just means resuming a few seconds earlier than ideal, a
+  minor annoyance, not a correctness bug); the pause/stop write is the
+  one worth an extra effort to confirm succeeded, since that's the
+  position the viewer actually expects to see next time.
+- **Concurrent writers (shared profile, two devices)**: use **last-
+  write-wins by `updated_at`** as the default resolution — simple, and
+  the failure mode (briefly showing the wrong device's position) is
+  low-stakes and self-correcting the next time either device writes
+  again. A more defensive variant tracks progress *per device*
+  internally but only surfaces the single most-recently-updated one as
+  "Continue Watching," so a still-active second device's position isn't
+  silently discarded, just not shown as primary until it becomes the
+  most recent write.
+- **Cross-device freshness**: don't have devices poll for a fresher
+  position. Read the current `WatchProgress` row on app open/resume (a
+  fast point read keyed by profile+title, not a scan), which is cheap
+  and already correct by construction since there's one authoritative
+  row per profile+title — no cache invalidation or push mechanism is
+  needed just to answer "where did I leave off," only a low-latency read
+  path in front of the store, the same cache-aside shape as the rest of
+  the read-heavy metadata surface in this lesson.
+
+</details>
+
+<Rubric
+  items={[
+    "Modeled watch progress keyed by profile + title (not per-device), so cross-device resume doesn't require merging multiple records",
+    "Distinguished which writes need to be durable/confirmed (pause/stop) from which can be best-effort/periodic (every 10-30s during playback)",
+    "Named a concrete conflict-resolution rule for two devices writing the same profile+title concurrently, not just 'handle conflicts'",
+    "Explained why polling isn't needed for cross-device freshness — a point read on app open is sufficient given the data model chosen",
+    "Reasoned about failure cost explicitly: a lost periodic update is low-stakes (resume a few seconds early), which justifies not making every write synchronously durable",
+  ]}
+/>
