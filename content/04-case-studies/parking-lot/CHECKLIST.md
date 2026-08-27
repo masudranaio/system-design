@@ -202,26 +202,29 @@ CONTENT-GUIDE's "default to bullets/tables" rule)
       Spots; one Ticket <-> one Vehicle <-> one Spot
 - [x] Decide the vehicle-to-spot compatibility rule explicitly
 
-### 3. Class diagram
+### 3. Class diagram (D2, split into 3 focused diagrams — one concern each)
 
-- [x] Mermaid class diagram (`classDiagram`) covering ParkingLot (id,
-      name, address, List\<Level\>, List\<EntryGate\>,
-      List\<ExitGate\>, owns parkVehicle()/unparkVehicle())
-- [x] Level/ParkingFloor (floor number, List\<Spot\>)
-- [x] Spot (id, size/type enum MOTORCYCLE/COMPACT/LARGE, status,
-      current Vehicle ref)
-- [x] Vehicle (abstract base: license plate, size; subclassed
-      Motorcycle/Car/Truck-Bus)
-- [x] Ticket (id, Vehicle ref, Spot ref, entry/exit timestamp, status)
-- [x] Gate (EntryGate issues ticket + triggers assignment; ExitGate
-      validates + triggers pricing + release)
-- [x] Payment/PricingStrategy (computes fee from duration + vehicle
-      type)
-- [x] DisplayBoard (optional, subscribes to occupancy changes)
-- [x] Relationships: composition ParkingLot-Level-Spot, association
-      Ticket-Vehicle and Ticket-Spot, Gate depends on ParkingLot's
-      allocate/release ops, PricingStrategy/SpotAssignmentStrategy
-      injected not owned
+- [x] **Diagram A — core domain classes** (`shape: class`): ParkingLot
+      (id, name, address, List\<Level\>, List\<EntryGate\>,
+      List\<ExitGate\>, owns parkVehicle()/unparkVehicle()),
+      Level/ParkingFloor (floor number, List\<Spot\>), Spot (id,
+      size/type enum MOTORCYCLE/COMPACT/LARGE, status, current Vehicle
+      ref), Ticket (id, Vehicle ref, Spot ref, entry/exit timestamp,
+      status), EntryGate/ExitGate (issues ticket + triggers assignment
+      / validates + triggers pricing + release) — with composition
+      ParkingLot-Level-Spot, association Ticket-Vehicle/Ticket-Spot,
+      Gate depends on ParkingLot's allocate/release ops
+- [x] **Diagram B — vehicle hierarchy** (`shape: class`): abstract
+      Vehicle base (license plate, size) subclassed
+      Motorcycle/Car/Truck-Bus, plus `VehicleFactory` constructing the
+      right subtype — isolates the Factory-pattern concern from the
+      core entity diagram instead of cramming inheritance arrows into it
+- [x] **Diagram C — strategy & observer collaborators** (`shape:
+      class`): SpotAssignmentStrategy/PricingStrategy interfaces
+      injected into ParkingLot (dependency, not owned), Payment
+      (computes/records fee), DisplayBoard (optional, subscribes to
+      occupancy changes) — isolates the "swappable behavior" pattern
+      concern from the structural composition diagram
 
 ### 4. State machines
 
@@ -237,10 +240,19 @@ CONTENT-GUIDE's "default to bullets/tables" rule)
 
 - [x] Singleton (ParkingLot, one instance; note testability/
       global-state trade-off, DI as alternative)
-- [x] Strategy x2: SpotAssignmentStrategy (nearest-first vs best-fit vs
-      level-balancing); PricingStrategy (flat/tiered/surge) — flag
-      this double-use as the key insight of the problem
-- [x] Factory (VehicleFactory/SpotFactory for subtype construction)
+- [x] Strategy x2, each given its own named-branch mechanism coverage
+      (not a one-line mention) via `CompareTable`:
+      - [x] `SpotAssignmentStrategy` — 3 named branches: nearest-first
+            (cheapest query, worst waste), best-fit (least waste,
+            costlier query + worse walk time), level-balancing (spreads
+            load across levels, most complex to compute)
+      - [x] `PricingStrategy` — 3 named branches: flat-rate (simplest,
+            ignores duration), tiered-by-hour (this lesson's default),
+            time-of-day/surge (matches demand, most state to track)
+      - [x] Flag the double-use of Strategy (assignment + pricing as
+            two independent axes of change) as the key insight of the
+            problem
+- [x] Factory (VehicleFactory for subtype construction)
 - [x] Observer (DisplayBoard subscribes to occupancy changes, bridges
       to HLD side)
 - [x] State (optional advanced answer: Ticket lifecycle as formal
@@ -262,8 +274,15 @@ CONTENT-GUIDE's "default to bullets/tables" rule)
       state name, per its Ticket state machine, used consistently
       instead of introducing a second synonym)
 - [x] Indexing: index ticket.spot_id for exit lookups
-- [x] Concurrency: row-level locking or atomic UPDATE...WHERE
-      status='AVAILABLE' (compare-and-set) to avoid double-assignment
+- [x] Concurrency deep dive, named 3-branch mechanism coverage (not a
+      one-line mention) via `CompareTable`: atomic `UPDATE ... WHERE
+      status='AVAILABLE'` compare-and-set (this lesson's choice — no
+      held lock, retry on 0-row-affected), pessimistic row lock
+      (`SELECT ... FOR UPDATE`, blocks concurrent readers for the
+      transaction's duration), optimistic version-column check
+      (`WHERE version = :expected`, same retry-on-mismatch shape as
+      CAS but detects any field change, not just status) — to avoid
+      double-assignment
 
 ### 7. Trade-offs
 
@@ -272,18 +291,21 @@ CONTENT-GUIDE's "default to bullets/tables" rule)
       coupled vs simple but laggy — resurfaces at HLD scale)
 - [x] Singleton vs DI ParkingLot (matches "one lot" vs testability)
 
-### 8. Worked example
+### 8. Worked example (split into 2 sequence diagrams — entry is one
+concern, exit is another)
 
-- [x] Sequence diagram: Car arrives at EntryGate-2 -> ParkingLot asks
-      Level 3 for a free COMPACT-or-larger spot via
-      SpotAssignmentStrategy -> Level returns Spot 3-047 -> spot
-      atomically flips OCCUPIED, Ticket T-1042 issued -> DisplayBoard
-      notified, decrements count
-- [x] Continue the trace: 2 hours later, exit at ExitGate-1 -> ticket
-      validated -> pricing computes fee -> payment recorded -> Spot
-      flips AVAILABLE, Ticket closes -> DisplayBoard increments
-- [x] Shows the atomic-transition point from the state machine section
-      concretely
+- [x] **Entry sequence diagram** (`shape: sequence_diagram`): Car
+      arrives at EntryGate-2 -> ParkingLot asks Level 3 for a free
+      COMPACT-or-larger spot via SpotAssignmentStrategy -> Level
+      returns Spot 3-047 -> spot atomically flips OCCUPIED, Ticket
+      T-1042 issued -> DisplayBoard notified, decrements count
+- [x] **Exit sequence diagram** (`shape: sequence_diagram`): 2 hours 18
+      minutes later, exit at ExitGate-1 -> ticket validated -> pricing
+      computes fee -> payment recorded -> Spot flips AVAILABLE, Ticket
+      closes -> DisplayBoard increments
+- [x] Both diagrams together show the atomic-transition point from the
+      state machine section concretely (spot flip + ticket
+      create/close as one committed unit in each direction)
 
 ### 9. Interview angle
 
