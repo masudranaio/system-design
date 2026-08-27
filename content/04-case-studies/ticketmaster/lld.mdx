@@ -38,136 +38,191 @@ written.
 The [HLD lesson's functional requirements](/case-studies/ticketmaster/hld)
 translate into five lifecycle-bearing entities:
 
-- **Search/browse events** → `Event`, `Venue`, `Show` need to be
-  queryable independently of booking state.
-- **View live seat availability** → `Seat` needs a status that's cheap
-  to read at ~100k requests/sec.
-- **Reserve a seat temporarily** → `Seat` needs a `LOCKED` state with an
+<Point icon="layers">
+  **Search/browse events** → `Event`, `Venue`, `Show` need to be queryable
+  independently of booking state.
+</Point>
+<Point icon="cache">
+  **View live seat availability** → `Seat` needs a status that's cheap to
+  read at ~100k requests/sec.
+</Point>
+<Point icon="clock">
+  **Reserve a seat temporarily** → `Seat` needs a `LOCKED` state with an
   expiry, and something has to own "who is holding this and until when."
-- **Complete payment and confirm** → `Booking` needs its own lifecycle,
-  separate from `Seat`'s, because one booking touches multiple seats and
-  a payment can fail after seats are held.
-- **Cancel/expire and release** → both `Seat` and `Booking` need a path
+</Point>
+<Point icon="shield">
+  **Complete payment and confirm** → `Booking` needs its own lifecycle,
+  separate from `Seat`'s, because one booking touches multiple seats and a
+  payment can fail after seats are held.
+</Point>
+<Point icon="branch">
+  **Cancel/expire and release** → both `Seat` and `Booking` need a path
   back to their starting state, not just a forward happy path.
+</Point>
 
 That last point is the one classes-as-status-flags usually get wrong:
 release-on-expiry and release-on-cancellation are two different trigger
-events that both need to land on the same `AVAILABLE` state, and if
-they're implemented as two separate ad-hoc code paths instead of one
-state transition, it's easy for one of them to leak a seat that's stuck
-`LOCKED` forever.
+events that both need to land on the same `AVAILABLE` state. Implemented
+as two separate ad-hoc code paths instead of one state transition, it's
+easy for one of them to leak a seat that's stuck `LOCKED` forever.
 
 ## Class design
 
-Ten classes cover the domain: `Venue` and `SeatMap` describe the
+Eleven classes cover the domain: `Venue` and `SeatMap` describe the
 physical space, `Event` and `Show` describe what's playing and when,
 `Seat` and `PricingTier` describe an individual seat's identity and
-price, and `User`, `Booking`, `BookingItem`, and `Payment` describe who
-bought what.
+price, `SeatInventory` describe per-show availability, and `User`,
+`Booking`, `BookingItem`, and `Payment` describe who bought what. The
+class diagram is split into two, by concern, rather than one diagram
+carrying all eleven classes: catalog/physical classes (what a buyer
+browses before committing to anything) and booking/transaction classes
+(what changes once a buyer starts a hold).
+
+### Catalog & physical classes
+
+<D2Diagram
+  title="Ticketmaster domain — catalog & physical classes"
+  type="class"
+  chart={`
+Venue: {
+  shape: class
+  +id: UUID
+  +name: string
+  +address: string
+}
+SeatMap: {
+  shape: class
+  +id: UUID
+  +venueId: UUID
+  +getSeats(): "Seat[]"
+}
+Seat: {
+  shape: class
+  +id: UUID
+  +seatMapId: UUID
+  +row: string
+  +number: int
+  +tierId: UUID
+}
+PricingTier: {
+  shape: class
+  +id: UUID
+  +name: string
+  +basePrice: decimal
+  +strategy: PricingStrategy
+}
+Event: {
+  shape: class
+  +id: UUID
+  +title: string
+  +venueId: UUID
+}
+Show: {
+  shape: class
+  +id: UUID
+  +eventId: UUID
+  +startTime: datetime
+  +status: ShowStatus
+}
+Venue -> SeatMap: "has (1:1)"
+SeatMap -> Seat: "contains (1:*)"
+Seat -> PricingTier: "priced by (*:1)"
+Venue -> Event: "hosts (1:*)"
+Event -> Show: "has (1:*)"
+`}
+/>
+
+*What a buyer browses before ever touching booking state: a `Venue` has
+one `SeatMap` of fixed physical `Seat`s, each priced by a `PricingTier`;
+a `Venue` hosts many `Event`s, each with many `Show`s.*
+
+### Booking & transaction classes
+
+<D2Diagram
+  title="Ticketmaster domain — booking & transaction classes"
+  type="class"
+  chart={`
+direction: right
+Seat: {
+  shape: class
+  +id: UUID
+  +row: string
+  +number: int
+}
+Show: {
+  shape: class
+  +id: UUID
+  +startTime: datetime
+}
+SeatInventory: {
+  shape: class
+  +showId: UUID
+  +seatId: UUID
+  +state: SeatState
+  +holdId: UUID
+  +holdExpiresAt: datetime
+  +version: int
+  +hold(userId): bool
+  +release(): void
+  +confirm(): void
+}
+Booking: {
+  shape: class
+  +id: UUID
+  +userId: UUID
+  +showId: UUID
+  +state: BookingState
+  +createdAt: datetime
+  +confirm(): void
+  +cancel(): void
+  +expire(): void
+}
+BookingItem: {
+  shape: class
+  +id: UUID
+  +bookingId: UUID
+  +seatId: UUID
+  +price: decimal
+}
+Payment: {
+  shape: class
+  +id: UUID
+  +bookingId: UUID
+  +amount: decimal
+  +status: PaymentStatus
+}
+User: {
+  shape: class
+  +id: UUID
+  +email: string
+  +name: string
+}
+Show -> SeatInventory: "tracks (1:*)"
+Seat -> SeatInventory: "tracked per show (1:*)"
+Booking -> BookingItem: "line items (1:*)"
+BookingItem -> SeatInventory: "reserves (1:1)"
+Booking -> Payment: "paid by (1:1)"
+User -> Booking: "places (1:*)"
+`}
+/>
+
+*`Seat` and `Show` here are the same classes from the diagram above,
+repeated only as the attachment points for `SeatInventory` — this is the
+concurrency-critical half of the domain: `SeatInventory` holds the
+lockable state, `Booking` is the transaction boundary, `Payment` is the
+external integration point.*
 
 The relationship worth calling out: `Seat` belongs to `SeatMap` (the
 venue's fixed layout), but seat *availability* is scoped to a `Show`, not
 to the `Seat` itself — the same physical seat is available for Tuesday's
 show and sold out for Saturday's. That's why `SeatInventory` exists as
 its own class rather than a status field on `Seat`: one row per
-`(show, seat)` pair, not one row per seat.
-
-<DiagramPanel
-  title="Ticketmaster domain — class diagram"
-  type="class"
-  chart={`classDiagram
-    class Venue {
-      +id: UUID
-      +name: string
-      +address: string
-    }
-    class SeatMap {
-      +id: UUID
-      +venueId: UUID
-      +getSeats() Seat[]
-    }
-    class Seat {
-      +id: UUID
-      +seatMapId: UUID
-      +row: string
-      +number: int
-      +tierId: UUID
-    }
-    class PricingTier {
-      +id: UUID
-      +name: string
-      +basePrice: decimal
-      +strategy: PricingStrategy
-    }
-    class Event {
-      +id: UUID
-      +title: string
-      +venueId: UUID
-    }
-    class Show {
-      +id: UUID
-      +eventId: UUID
-      +startTime: datetime
-      +status: ShowStatus
-    }
-    class SeatInventory {
-      +showId: UUID
-      +seatId: UUID
-      +state: SeatState
-      +holdId: UUID
-      +holdExpiresAt: datetime
-      +version: int
-      +hold(userId) bool
-      +release() void
-      +confirm() void
-    }
-    class Booking {
-      +id: UUID
-      +userId: UUID
-      +showId: UUID
-      +state: BookingState
-      +createdAt: datetime
-      +confirm() void
-      +cancel() void
-      +expire() void
-    }
-    class BookingItem {
-      +id: UUID
-      +bookingId: UUID
-      +seatId: UUID
-      +price: decimal
-    }
-    class Payment {
-      +id: UUID
-      +bookingId: UUID
-      +amount: decimal
-      +status: PaymentStatus
-    }
-    class User {
-      +id: UUID
-      +email: string
-      +name: string
-    }
-    Venue "1" --> "1" SeatMap : has
-    SeatMap "1" --> "*" Seat : contains
-    Seat "1" --> "1" PricingTier : priced by
-    Venue "1" --> "*" Event : hosts
-    Event "1" --> "*" Show : has
-    Show "1" --> "*" SeatInventory : tracks
-    Seat "1" --> "*" SeatInventory : tracked per show
-    Booking "1" --> "*" BookingItem : line items
-    BookingItem "1" --> "1" SeatInventory : reserves
-    Booking "1" --> "1" Payment : paid by
-    Booking "*" --> "1" User : placed by
-`}
-/>
-
-`SeatInventory` is the entity every concurrency mechanism in this lesson
-attaches to: it's what holds the `state`, the `version` (used for
-optimistic locking, covered under Database design), and the `holdId` /
-`holdExpiresAt` pair. `Seat` itself stays a dumb, immutable-ish
-description of a physical location — row, number, tier — because that
-data doesn't change per show.
+`(show, seat)` pair, not one row per seat. `SeatInventory` is the entity
+every concurrency mechanism in this lesson attaches to: it's what holds
+the `state`, the `version` (used for optimistic locking, covered under
+Database design), and the `holdId` / `holdExpiresAt` pair. `Seat` itself
+stays a dumb, immutable-ish description of a physical location — row,
+number, tier — because that data doesn't change per show.
 
 <QuizItem
   question="Why is seat availability modeled as a separate SeatInventory row per (show, seat), instead of a status field directly on Seat?"
@@ -184,17 +239,16 @@ paths back to `AVAILABLE`, not one: a hold that times out, and a hold or
 booking that's explicitly cancelled. A state machine forces both paths to
 be named and handled instead of one being an afterthought.
 
-<DiagramPanel
+<D2Diagram
   title="Seat inventory state machine"
   type="state"
-  chart={`stateDiagram-v2
-    [*] --> AVAILABLE
-    AVAILABLE --> LOCKED : hold(userId) — TTL starts
-    LOCKED --> BOOKED : payment confirmed
-    LOCKED --> AVAILABLE : TTL expires
-    LOCKED --> AVAILABLE : user cancels hold
-    BOOKED --> AVAILABLE : booking cancelled / refunded
-    BOOKED --> [*]
+  chart={`
+direction: right
+AVAILABLE -> LOCKED: "hold(userId) — TTL starts"
+LOCKED -> BOOKED: "payment confirmed"
+LOCKED -> AVAILABLE: "TTL expires"
+LOCKED -> AVAILABLE: "user cancels hold"
+BOOKED -> AVAILABLE: "booking cancelled / refunded"
 `}
 />
 
@@ -210,18 +264,15 @@ A `Booking` is a separate state machine from `Seat`, because a booking
 can span multiple seats and its failure modes are about payment, not
 about any individual seat.
 
-<DiagramPanel
+<D2Diagram
   title="Booking state machine"
   type="state"
-  chart={`stateDiagram-v2
-    [*] --> PENDING : seats held
-    PENDING --> CONFIRMED : payment succeeds
-    PENDING --> EXPIRED : hold TTL elapses before payment
-    PENDING --> CANCELLED : user cancels before paying
-    CONFIRMED --> CANCELLED : refund issued
-    CONFIRMED --> [*]
-    EXPIRED --> [*]
-    CANCELLED --> [*]
+  chart={`
+direction: right
+PENDING -> CONFIRMED: "payment succeeds"
+PENDING -> EXPIRED: "hold TTL elapses before payment"
+PENDING -> CANCELLED: "user cancels before paying"
+CONFIRMED -> CANCELLED: "refund issued"
 `}
 />
 
@@ -256,6 +307,46 @@ transition that state's implementation supports — the illegal
 transition is a missing method call, not a runtime check that a future
 edit might delete.
 
+<D2Diagram
+  title="State pattern — SeatState hierarchy"
+  type="class"
+  chart={`
+SeatState: "SeatState «interface»" {
+  shape: class
+  +hold(userId: UUID): bool
+  +release(): void
+  +confirm(): void
+}
+AvailableState: {
+  shape: class
+  +hold(userId: UUID): bool
+}
+LockedState: {
+  shape: class
+  +release(): void
+  +confirm(): void
+}
+BookedState: {
+  shape: class
+}
+SeatInventory: {
+  shape: class
+  -currentState: SeatState
+  +hold(userId: UUID): bool
+  +release(): void
+  +confirm(): void
+}
+AvailableState -> SeatState: implements {style.stroke-dash: 4}
+LockedState -> SeatState: implements {style.stroke-dash: 4}
+BookedState -> SeatState: implements {style.stroke-dash: 4}
+SeatInventory -> SeatState: "delegates to current state"
+`}
+/>
+
+*Each state class only implements the transitions that state actually
+supports — `AvailableState` has no `confirm()` at all, so calling it
+there isn't a bug caught by a check, it's a method that doesn't exist.*
+
 {/* concept-dependency: LLD-03 not yet built, explained inline */}
 This is also a concrete instance of the **Open/Closed Principle** (one
 of the five SOLID principles: a class should be open for extension but
@@ -271,20 +362,89 @@ The **Strategy pattern** puts each algorithm behind a shared
 `PricingStrategy` interface (`calculatePrice(seat, show): decimal`) and
 lets `PricingTier` hold a reference to whichever strategy applies,
 instead of `BookingItem.getPrice()` branching on a tier-name string.
-Adding a fourth pricing model — say, a bundle discount — means writing
+
+<D2Diagram
+  title="Strategy pattern — PricingStrategy hierarchy"
+  type="class"
+  chart={`
+direction: right
+PricingStrategy: "PricingStrategy «interface»" {
+  shape: class
+  +calculatePrice(seat: Seat, show: Show): decimal
+}
+VipPricingStrategy: {
+  shape: class
+  +calculatePrice(seat: Seat, show: Show): decimal
+}
+GeneralPricingStrategy: {
+  shape: class
+  +calculatePrice(seat: Seat, show: Show): decimal
+}
+DynamicPricingStrategy: {
+  shape: class
+  -demandModel: DemandModel
+  +calculatePrice(seat: Seat, show: Show): decimal
+}
+PricingTier: {
+  shape: class
+  +strategy: PricingStrategy
+}
+VipPricingStrategy -> PricingStrategy: implements {style.stroke-dash: 4}
+GeneralPricingStrategy -> PricingStrategy: implements {style.stroke-dash: 4}
+DynamicPricingStrategy -> PricingStrategy: implements {style.stroke-dash: 4}
+PricingTier -> PricingStrategy: "holds a reference to"
+`}
+/>
+
+*Adding a fourth pricing model — say, a bundle discount — means writing
 one new class that implements `PricingStrategy`; `Booking` and
 `BookingItem` never change, because they only ever call
-`strategy.calculatePrice(...)` through the interface.
+`strategy.calculatePrice(...)` through the interface.*
 
 ### Factory — for ticket/seat types
 
 Different seat tiers (VIP box, standard, accessible, standing-room) need
 different construction logic — an accessible seat carries extra
 placement constraints, a VIP seat auto-attaches a concierge-contact
-field. A `SeatFactory.create(tierType, ...)` centralizes that
-construction logic in one place, so the code that builds a `SeatMap`
-from a venue layout doesn't need a switch statement over seat types
-scattered across the venue-import pipeline.
+field. A single "use a factory" answer isn't enough in a real interview
+— which factory-family pattern fits depends on how construction actually
+varies:
+
+<CompareTable
+  title="Construction pattern for seat/ticket types"
+  rows={[
+    {
+      approach: "Simple Factory method",
+      pros: [
+        "One method, SeatFactory.create(tierType, ...), centralizes construction logic",
+        "No switch statement scattered across the venue-import pipeline",
+      ],
+      cons: [
+        "Doesn't help if construction rules also vary by venue region, not just tier",
+      ],
+      chosenBecause:
+        "the default for this design — a fixed, small set of seat tiers with construction logic that varies only by tier",
+    },
+    {
+      approach: "Abstract Factory",
+      pros: [
+        "Groups a whole family of related seat/tier constructors per venue region (e.g. EU accessible-seat rules differ from US ones)",
+      ],
+      cons: [
+        "Extra indirection layer not worth it unless region-specific construction rules actually exist",
+      ],
+    },
+    {
+      approach: "Builder",
+      pros: [
+        "Fits seats with many optional fields (accessible-seat constraints, VIP concierge contact) better than one fat constructor with mostly-null arguments",
+      ],
+      cons: [
+        "More verbose call sites for the common case of a plain standard seat",
+      ],
+    },
+  ]}
+/>
 
 ### Observer — for hold-release notifications
 
@@ -293,10 +453,43 @@ expiry or cancellation), zero or more users who wishlisted or previously
 tried to hold that exact seat need a notification. Rather than
 `SeatInventory.release()` hard-coding a call to the notification
 service, `SeatInventory` holds a list of `Observer` subscribers and calls
-`notify(seatId)` on all of them at the moment of release. The
-notification service subscribes as one observer; a future "waitlist"
-feature could subscribe as a second, without touching
-`SeatInventory.release()` again.
+`notify(seatId)` on all of them at the moment of release. How that
+dispatch actually happens is a second decision, not automatically solved
+by picking Observer:
+
+<CompareTable
+  title="Observer dispatch mechanism"
+  rows={[
+    {
+      approach: "In-process observer list",
+      pros: [
+        "Simple: SeatInventory.release() loops its subscriber list and calls notify()",
+        "No extra infrastructure",
+      ],
+      cons: [
+        "Lost if the SeatInventory-owning process crashes mid-dispatch",
+        "Doesn't scale past one process — a second instance has its own, disconnected subscriber list",
+      ],
+      chosenBecause: "fine at the scale of one instance handling one seat's release",
+    },
+    {
+      approach: "Queue/pub-sub dispatch",
+      pros: [
+        "Survives a process crash — the release event is durable until a subscriber consumes it",
+        "Scales past one instance: any consumer group can subscribe",
+      ],
+      cons: ["More moving parts: a queue/topic and consumer infrastructure"],
+      chosenBecause:
+        "needed once notification fan-out must survive process crashes or run across multiple SeatInventory-owning instances (the HLD lesson's message queue is exactly this)",
+    },
+  ]}
+/>
+
+The notification service subscribes as one observer regardless of which
+dispatch mechanism backs it; a future "waitlist" feature could subscribe
+as a second, without touching `SeatInventory.release()` again — that
+part of the Observer contract doesn't change between the two dispatch
+options above.
 
 <QuizItem
   question="A new requirement arrives: add a 'loyalty member' pricing tier that gives 15% off the base price. Which class do you touch, and which do you not touch?"
@@ -310,89 +503,195 @@ The schema splits across two storage systems on purpose, following the
 HLD's Redis-for-holds decision down to the object level: relational
 tables for anything that needs a transaction (bookings, payments,
 confirmed seat state), and Redis — deliberately *not* a table in this
-schema — for the seat hold's TTL.
+schema — for the seat hold's TTL. The relational tables themselves split
+by the same catalog/booking concern boundary as the class diagrams
+above.
 
-<DiagramPanel
-  title="Ticketmaster relational schema"
+### Catalog schema
+
+<D2Diagram
+  title="Ticketmaster relational schema — catalog tables"
   type="er"
-  chart={`erDiagram
-    VENUE ||--|| SEAT_MAP : has
-    SEAT_MAP ||--o{ SEAT : contains
-    SEAT }o--|| PRICING_TIER : priced_by
-    VENUE ||--o{ EVENT : hosts
-    EVENT ||--o{ SHOW : has
-    SHOW ||--o{ SEAT_INVENTORY : tracks
-    SEAT ||--o{ SEAT_INVENTORY : tracked_per_show
-    USER ||--o{ BOOKING : places
-    SHOW ||--o{ BOOKING : booked_for
-    BOOKING ||--o{ BOOKING_ITEM : line_items
-    SEAT_INVENTORY ||--o| BOOKING_ITEM : reserved_by
-    BOOKING ||--|| PAYMENT : paid_by
-
-    SEAT_INVENTORY {
-      uuid show_id PK
-      uuid seat_id PK
-      string state
-      uuid hold_owner_user_id
-      int version
-    }
-    BOOKING {
-      uuid id PK
-      uuid user_id FK
-      uuid show_id FK
-      string state
-      timestamp created_at
-    }
+  chart={`
+venue: {
+  shape: sql_table
+  id: uuid {constraint: primary_key}
+  name: string
+  address: string
+}
+seat_map: {
+  shape: sql_table
+  id: uuid {constraint: primary_key}
+  venue_id: uuid {constraint: foreign_key}
+}
+seat: {
+  shape: sql_table
+  id: uuid {constraint: primary_key}
+  seat_map_id: uuid {constraint: foreign_key}
+  row: string
+  number: int
+  tier_id: uuid {constraint: foreign_key}
+}
+pricing_tier: {
+  shape: sql_table
+  id: uuid {constraint: primary_key}
+  name: string
+  base_price: decimal
+}
+event: {
+  shape: sql_table
+  id: uuid {constraint: primary_key}
+  title: string
+  venue_id: uuid {constraint: foreign_key}
+}
+show: {
+  shape: sql_table
+  id: uuid {constraint: primary_key}
+  event_id: uuid {constraint: foreign_key}
+  start_time: timestamp
+  status: string
+}
+venue.id -> seat_map.venue_id
+seat_map.id -> seat.seat_map_id
+pricing_tier.id -> seat.tier_id
+venue.id -> event.venue_id
+event.id -> show.event_id
 `}
 />
 
-*The full ER diagram lists every table's columns in the schema notes
-below; this panel highlights `SEAT_INVENTORY` and `BOOKING` because
-they're the two tables the concurrency design depends on.*
+### Booking schema
+
+<D2Diagram
+  title="Ticketmaster relational schema — booking & transaction tables"
+  type="er"
+  chart={`
+seat_inventory: {
+  shape: sql_table
+  show_id: uuid {constraint: primary_key}
+  seat_id: uuid {constraint: primary_key}
+  state: string
+  hold_owner_user_id: uuid
+  hold_expires_at: timestamp
+  version: int
+}
+booking: {
+  shape: sql_table
+  id: uuid {constraint: primary_key}
+  user_id: uuid {constraint: foreign_key}
+  show_id: uuid {constraint: foreign_key}
+  state: string
+  created_at: timestamp
+}
+booking_item: {
+  shape: sql_table
+  id: uuid {constraint: primary_key}
+  booking_id: uuid {constraint: foreign_key}
+  seat_id: uuid {constraint: foreign_key}
+  price: decimal
+}
+payment: {
+  shape: sql_table
+  id: uuid {constraint: primary_key}
+  booking_id: uuid {constraint: foreign_key}
+  amount: decimal
+  status: string
+}
+user: {
+  shape: sql_table
+  id: uuid {constraint: primary_key}
+  email: string
+  name: string
+}
+user.id -> booking.user_id
+booking.id -> booking_item.booking_id
+seat_inventory.seat_id -> booking_item.seat_id
+booking.id -> payment.booking_id
+`}
+/>
+
+*`SEAT_INVENTORY` and `BOOKING` are the two tables the concurrency design
+depends on — `SEAT_INVENTORY` for the `version`-checked hold, `BOOKING`
+as the transaction boundary that ties multiple seats and a payment
+together.*
 
 ### Normalization decisions
 
-`SEAT_INVENTORY` is its own table keyed on `(show_id, seat_id)` rather
-than being folded into `EVENT` or `SHOW` as a JSON blob or a denormalized
-seat-count column, because individual seat rows need row-level locking
-and independent updates — a `SHOW.available_seats_json` blob would force
-every hold to read-modify-write the entire show's seat map, serializing
-all concurrent holds on a show through one row. One row per seat per
-show is the classic case for full normalization: each row changes
-independently and needs its own transaction boundary.
+<Point icon="database">
+  `SEAT_INVENTORY` is its own table keyed on `(show_id, seat_id)` rather
+  than folded into `EVENT`/`SHOW` as a JSON blob or a denormalized
+  seat-count column — individual seat rows need row-level locking and
+  independent updates.
+</Point>
+<Point icon="lock">
+  A `SHOW.available_seats_json` blob would force every hold to
+  read-modify-write the entire show's seat map, serializing all
+  concurrent holds on a show through one row.
+</Point>
+<Point icon="layers">
+  One row per seat per show is the classic case for full normalization:
+  each row changes independently and needs its own transaction boundary.
+</Point>
+<Point icon="cache">
+  The one place denormalization pays off is the read path: a
+  **read-optimized cache table** (or Redis hash) holding just `seat_id →
+  state` per show, refreshed on every write and served for GET requests,
+  avoids hitting the normalized table (with its `version` column and
+  foreign keys) for every seat-map render.
+</Point>
 
-The one place denormalization pays off is the read path: showing a
-seat-map UI for a popular show is ~100k reads/sec against maybe a few
-thousand seats, all identical rows. A **read-optimized cache table** (or
-Redis hash) holding just `seat_id → state` per show, refreshed on every
-write and served for GET requests, avoids hitting the normalized table
-(with its `version` column and foreign keys) for every seat-map render.
+<KeyStat
+  value="~100k reads/sec"
+  label="seat-map render traffic against a few thousand identical rows per show"
+  detail="Per the HLD lesson's capacity estimate: showing a seat-map UI for a popular show is read-dominated at roughly a 100:1 read:write ratio. A per-show read cache serves this in one lookup instead of a filtered scan of the normalized table on every request."
+/>
+
 That's denormalization for read scaling, layered on top of a normalized
 source of truth — not a replacement for it.
 
 ### Indexing strategy
 
-The dominant query is "show seat availability for show X": `SELECT
-seat_id, state FROM seat_inventory WHERE show_id = ?`. A composite index
-on `(show_id, state)` serves that directly and also serves the narrower
-"show only available seats for show X" query
-(`WHERE show_id = ? AND state = 'AVAILABLE'`) without a table scan. The
-primary key `(show_id, seat_id)` already gives point lookups ("is this
-exact seat available") for free.
+<Point icon="database">
+  The dominant query is "show seat availability for show X":
+  `SELECT seat_id, state FROM seat_inventory WHERE show_id = ?`. A
+  composite index on `(show_id, state)` serves that directly and also
+  serves the narrower "show only available seats for show X" query
+  (`WHERE show_id = ? AND state = 'AVAILABLE'`) without a table scan.
+</Point>
+<Point icon="lock">
+  The primary key `(show_id, seat_id)` already gives point lookups ("is
+  this exact seat available") for free — no separate index needed.
+</Point>
+<Point icon="users">
+  A second, unrelated query needs its own index: "show a user their
+  booking history" (`SELECT * FROM booking WHERE user_id = ? ORDER BY
+  created_at DESC`) is a different table with a different access
+  pattern, so it needs its own `(user_id, created_at)` composite index
+  on `BOOKING` — reusing the seat-inventory index isn't an option, they
+  don't share a table.
+</Point>
 
 ### SQL vs NoSQL at the object level
 
-`Booking`, `BookingItem`, `Payment`, and `SeatInventory`'s committed
-state live in a relational database because confirming a booking is a
-multi-row transaction — inserting the booking, inserting each booking
-item, and flipping each seat's state to `BOOKED` all have to commit
-together or not at all. The seat *hold*, by contrast, is deliberately
-**not** a row in this schema: it lives in Redis as a key like
-`hold:SHOW_ID:SEAT_ID` with a TTL, set via `SET key value NX EX 600`
-(set-if-not-exists, 600-second expiry). Redis is chosen there over a
-relational `hold_expires_at` column plus a polling cron job because TTL
-expiry is a first-class Redis feature — the lock disappears on its own
-the instant it expires, with no background sweeper needed to notice.
+<Point icon="shield">
+  `Booking`, `BookingItem`, `Payment`, and `SeatInventory`'s committed
+  state live in a relational database because confirming a booking is a
+  multi-row transaction — inserting the booking, inserting each booking
+  item, and flipping each seat's state to `BOOKED` all have to commit
+  together or not at all.
+</Point>
+<Point icon="clock">
+  The seat *hold*, by contrast, is deliberately **not** a row in this
+  schema: it lives in Redis as a key like `hold:SHOW_ID:SEAT_ID` with a
+  TTL, set via `SET key value NX EX 600` (set-if-not-exists, 600-second
+  expiry).
+</Point>
+<Point icon="lock">
+  Redis is chosen there over a relational `hold_expires_at` column plus a
+  polling cron job because TTL expiry is a first-class Redis feature —
+  the lock disappears on its own the instant it expires, with no
+  background sweeper needed to notice.
+</Point>
+
 The trade-off — and why the DB still carries a `state` and `version`
 column too, not just Redis — is covered next.
 
@@ -430,29 +729,67 @@ across a cluster) and both reach the database's `UPDATE`.
 
 ## Trade-offs
 
-**State pattern vs. enum + if/else.** An enum with `if/else` checks is
-less code up front for three states and stays that way if the domain
-never grows. The State pattern costs more boilerplate (one class per
-state) but pays it back the moment a new state or a cross-cutting rule
-(e.g. "no state can transition directly to `BOOKED` except from
-`LOCKED`") needs enforcing in one place instead of at every call site
-that touches the enum. For a domain that's explicitly expected to grow
-(the interview angle below adds group holds, which needs at least one
-more state), the State pattern is the better bet; for a two-state toggle
-that will never change, the enum is simpler and the pattern would be
-over-engineering.
+<CompareTable
+  title="State pattern vs. enum + if/else"
+  rows={[
+    {
+      approach: "Enum + if/else",
+      pros: [
+        "Less code up front for a small, stable number of states",
+        "No extra classes to maintain",
+      ],
+      cons: [
+        "Every method needs its own guard clause repeating the same check",
+        "A new state means editing every existing branch that enumerates states",
+      ],
+    },
+    {
+      approach: "State pattern",
+      pros: [
+        "Illegal transition is a missing method, not a runtime check a future edit can delete",
+        "New state = one new class (Open/Closed Principle)",
+      ],
+      cons: ["More boilerplate: one class per state"],
+      chosenBecause:
+        "the domain is explicitly expected to grow (the interview angle below adds group holds, which needs at least one more state) and cross-cutting transition rules (e.g. 'no state can transition directly to BOOKED except from LOCKED') need one enforcement point",
+    },
+  ]}
+/>
 
-**Normalized vs. denormalized seat-status table.** Fully normalized
-`SEAT_INVENTORY` (the schema above) gives correct, independently
-lockable rows but costs a join or a filtered scan for every seat-map
-render. A denormalized per-show cache (seat states pre-aggregated into
-one blob or one Redis hash per show) serves reads in a single lookup but
-means every write has to also update the cache, and the cache can
-briefly lag the source of truth. The right call, and what this lesson's
-schema does, is both: normalized rows as the transactional source of
-truth, a denormalized read cache in front of them for the ~100:1
-read:write ratio the HLD lesson's capacity estimate calls out — never
-denormalize away the source of truth itself.
+For a two-state toggle that will never change, the enum stays simpler
+and the State pattern would be over-engineering — the right call depends
+on whether the domain is expected to grow.
+
+<CompareTable
+  title="Normalized vs. denormalized seat-status table"
+  rows={[
+    {
+      approach: "Fully normalized SEAT_INVENTORY",
+      pros: [
+        "Correct, independently lockable rows",
+        "Each write is isolated to exactly the row it touches",
+      ],
+      cons: ["A join or filtered scan for every seat-map render"],
+    },
+    {
+      approach: "Denormalized per-show cache",
+      pros: ["Serves reads in a single lookup"],
+      cons: [
+        "Every write also has to update the cache",
+        "The cache can briefly lag the source of truth",
+      ],
+    },
+    {
+      approach: "Both: normalized source + denormalized read cache",
+      pros: [
+        "Correctness from the normalized rows, read speed from the cache",
+      ],
+      cons: ["Two things to keep in sync instead of one"],
+      chosenBecause:
+        "the ~100:1 read:write ratio the HLD lesson's capacity estimate calls out — never denormalize away the source of truth itself",
+    },
+  ]}
+/>
 
 ## Worked example: reserve-seat flow with a version-check retry
 
@@ -460,29 +797,32 @@ Two users, Priya and Marcus, both click "Select seat" on seat `C12` for
 the same show within the same 50ms window. `C12`'s current
 `SeatInventory` row: `state = AVAILABLE`, `version = 7`.
 
-<DiagramPanel
+<D2Diagram
   title="Reserve-seat flow — concurrent hold attempt with version-check retry"
   type="sequence"
-  chart={`sequenceDiagram
-    participant Priya
-    participant Marcus
-    participant API as Booking Service
-    participant Redis
-    participant DB as seat_inventory (SQL)
+  chart={`
+shape: sequence_diagram
+Priya
+Marcus
+API: Booking Service
+Redis
+DB: "seat_inventory (SQL)"
 
-    Priya->>API: POST /hold seat=C12
-    Marcus->>API: POST /hold seat=C12
-    API->>Redis: SET hold:show1:C12 priya NX EX 600
-    Redis-->>API: OK (lock acquired)
-    API->>Redis: SET hold:show1:C12 marcus NX EX 600
-    Redis-->>API: nil (key exists — lock held)
-    API-->>Marcus: 409 seat unavailable
-    API->>DB: UPDATE seat_inventory SET state=LOCKED, version=8 WHERE seat=C12 AND version=7 AND state=AVAILABLE
-    DB-->>API: 1 row updated
-    API-->>Priya: 200 held, expires in 10:00
-    Note over DB: version now 8 — a second UPDATE with version=7 would match 0 rows
+Priya -> API: "POST /hold seat=C12"
+Marcus -> API: "POST /hold seat=C12"
+API -> Redis: "SET hold:show1:C12 priya NX EX 600"
+Redis -> API: "OK (lock acquired)"
+API -> Redis: "SET hold:show1:C12 marcus NX EX 600"
+Redis -> API: "nil (key exists — lock held)"
+API -> Marcus: "409 seat unavailable"
+API -> DB: "UPDATE seat_inventory SET state=LOCKED, version=8 WHERE seat=C12 AND version=7 AND state=AVAILABLE"
+DB -> API: "1 row updated"
+API -> Priya: "200 held, expires in 10:00"
 `}
 />
+
+*Version now 8 after Priya's update commits — a second `UPDATE` still
+carrying `version = 7` would match 0 rows.*
 
 Marcus never reaches the database at all — the Redis `NX` (set-if-not-
 exists) check rejects him at the first line of defense, which is the
@@ -503,30 +843,35 @@ against the same seat.
 
 ## Interview angle
 
-**"Walk me through your classes."** Start from the entity a buyer
-touches first — `Event` and `Show` for browsing — then narrow to
-`SeatInventory` as the concurrency-critical entity, then `Booking` and
-`BookingItem` as the transaction boundary, then `Payment` as an external
-integration point. Naming the ownership relationships (`Show` owns many
-`SeatInventory` rows; `Booking` owns many `BookingItem`s) in that order
-shows you're reasoning about the domain, not reciting a class list.
-
-**"How does this prevent double-booking at the code level?"** Two
-independent guards, not one: Redis's `SET NX` gives a fast, mostly-
-sufficient exclusion at hold time, and the `version` column's optimistic
-check on the `UPDATE` gives a correctness guarantee that doesn't depend
-on Redis being perfectly consistent. Say explicitly that either guard
-alone would be defensible, but running both is deliberate defense-in-
-depth given the stakes of overselling a seat.
-
-**"Add a new pricing strategy without touching Booking."** This is a
-direct test of the Strategy pattern's payoff from earlier in this
-lesson: write a new class implementing `PricingStrategy`, wire it onto
-the relevant `PricingTier`, and `Booking`/`BookingItem` — which only ever
-call `strategy.calculatePrice(...)` through the interface — need zero
-changes. If your design requires touching `Booking` to add a pricing
-rule, that's the signal the pricing logic leaked out of its own
-abstraction.
+<Point icon="branch">
+  **"Walk me through your classes."** Start from the entity a buyer
+  touches first — `Event` and `Show` for browsing — then narrow to
+  `SeatInventory` as the concurrency-critical entity, then `Booking` and
+  `BookingItem` as the transaction boundary, then `Payment` as an
+  external integration point. Naming the ownership relationships (`Show`
+  owns many `SeatInventory` rows; `Booking` owns many `BookingItem`s) in
+  that order shows you're reasoning about the domain, not reciting a
+  class list.
+</Point>
+<Point icon="lock">
+  **"How does this prevent double-booking at the code level?"** Two
+  independent guards, not one: Redis's `SET NX` gives a fast, mostly-
+  sufficient exclusion at hold time, and the `version` column's
+  optimistic check on the `UPDATE` gives a correctness guarantee that
+  doesn't depend on Redis being perfectly consistent. Say explicitly that
+  either guard alone would be defensible, but running both is deliberate
+  defense-in-depth given the stakes of overselling a seat.
+</Point>
+<Point icon="branch">
+  **"Add a new pricing strategy without touching Booking."** A direct
+  test of the Strategy pattern's payoff from earlier in this lesson:
+  write a new class implementing `PricingStrategy`, wire it onto the
+  relevant `PricingTier`, and `Booking`/`BookingItem` — which only ever
+  call `strategy.calculatePrice(...)` through the interface — need zero
+  changes. If your design requires touching `Booking` to add a pricing
+  rule, that's the signal the pricing logic leaked out of its own
+  abstraction.
+</Point>
 
 ## Practice & Self-Check
 
@@ -565,6 +910,11 @@ abstraction.
 <QuizItem
   question="Why does Booking have its own state machine (PENDING/CONFIRMED/EXPIRED/CANCELLED) separate from Seat's (AVAILABLE/LOCKED/BOOKED), instead of deriving the booking's status from its seats' statuses?"
   answer="A single booking can span multiple seats and its failure modes are about the payment step, not any individual seat — deriving Booking's state from its seats would break the moment a booking holds two seats that could, in theory, diverge (e.g. one released by an admin override). Keeping them separate, coupled only at the point where a terminal Booking state releases its seats, keeps each state machine's job singular."
+/>
+
+<QuizItem
+  question="A buyer wants to see their past bookings. Which index from the Database design section serves that query, and why can't the (show_id, state) index on SEAT_INVENTORY serve it instead?"
+  answer="A (user_id, created_at) composite index on BOOKING. The (show_id, state) index lives on a different table (SEAT_INVENTORY) with a different access pattern — it's built for 'show me seat availability for a show,' not 'show me a user's bookings across every show they've bought from,' so it can't be reused across tables."
 />
 
 ### Open design challenge
@@ -617,4 +967,3 @@ by itself still only locks its own seat.
     "Explained how Booking/BookingItem already support multi-seat bookings without a schema change",
   ]}
 />
-

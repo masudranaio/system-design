@@ -161,6 +161,12 @@ subgraphs) splits into two standalone D2 diagrams, one per scenario.
 
 ## LLD Checklist (`lld.mdx`)
 
+Retrofit note (2026-08-27, content-format standard): every diagram below
+is `D2Diagram`, not `DiagramPanel`/Mermaid; requirements, comparisons, and
+mechanism lists default to bullets/`CompareTable`/`KeyStat`/`Point` rather
+than prose paragraphs (prose stays for narrative motivation and the
+worked example only, per `CONTENT-GUIDE.md`).
+
 ### 1. Problem framing
 
 - [x] Frame the problem from the object/schema level: model the booking
@@ -172,37 +178,63 @@ subgraphs) splits into two standalone D2 diagrams, one per scenario.
 - [x] Identify the entities and lifecycle states needed to support the
       functional requirements above
 
-### 3. Class diagram
+### 3. Class diagram (D2, split by concern per the content-format standard —
+     one 11-class diagram is a single-diagram-carries-the-section case)
 
-- [x] Class diagram (Mermaid `classDiagram`) covering Event, Venue,
-      SeatMap, Seat, Show, Booking, BookingItem, Payment, User,
-      PricingTier, and their relationships
+- [x] D2 class diagram #1 ("catalog & physical" concern): `Venue`,
+      `SeatMap`, `Seat`, `PricingTier`, `Event`, `Show` and their
+      relationships
+- [x] D2 class diagram #2 ("booking & transaction" concern):
+      `SeatInventory`, `Booking`, `BookingItem`, `Payment`, `User` and
+      their relationships, plus the cross-diagram links back to diagram #1
+      (`Seat`→`SeatInventory`, `Show`→`SeatInventory`)
 
-### 4. State machines
+### 4. State machines (D2, shapes-and-connections technique)
 
 - [x] Seat state machine: `AVAILABLE → LOCKED(TTL) → BOOKED`, with paths
       back to `AVAILABLE` on expiry or cancellation
 - [x] Booking state machine: `PENDING → CONFIRMED → CANCELLED / EXPIRED`
 
-### 5. Design patterns
+### 5. Design patterns (each with its own small D2 diagram where the pattern
+     has a class structure — not text-only — and each deep-dive covering
+     2-3 real-interview branches, not one paragraph)
 
 - [x] State — for Seat and Booking lifecycles, instead of scattered status
-      if/else checks
+      if/else checks; own D2 class diagram showing the `SeatState`
+      interface and its 3 implementing classes delegated to by
+      `SeatInventory`
 - [x] Strategy — for pricing (VIP / general / dynamic), swappable without
-      touching booking logic
-- [x] Factory — for creating different ticket/seat types
+      touching booking logic; own D2 class diagram showing the
+      `PricingStrategy` interface and its implementing classes
+- [x] Factory — for creating different ticket/seat types; expanded beyond
+      one paragraph to name the 2-3 branches an interview actually goes
+      down: simple factory method vs. an Abstract Factory when venues
+      have region-specific seat-type rules, vs. a Builder when
+      construction needs many optional fields (accessible-seat
+      constraints, VIP concierge field) instead of one fat constructor
 - [x] Observer — for notifying waiting users when a held seat is released
-      back to available
+      back to available; expanded to cover in-process observer list
+      (simple, fine at one instance) vs. queue/pub-sub-based dispatch
+      (needed once notification fan-out must survive the
+      `SeatInventory`-owning process crashing or scale past one instance)
 - [x] SOLID framing threaded through (e.g. Strategy over an if/else
       pricing block as an Open/Closed win)
 
 ### 6. Database design
 
-- [x] ER diagram / schema for the entities above
+- [x] D2 ER diagrams (`shape: sql_table`, `constraint: primary_key` /
+      `foreign_key`), split by the same catalog/booking concern boundary
+      as the class diagrams: ER diagram #1 (`venue`, `seat_map`, `seat`,
+      `pricing_tier`, `event`, `show`) and ER diagram #2
+      (`seat_inventory`, `booking`, `booking_item`, `payment`, `user`)
 - [x] Normalization decisions: seat inventory as its own row per
       seat-per-show rather than denormalized into Event; where
       denormalizing would help read-heavy seat-map queries
-- [x] Indexing strategy for "show seat availability for show X"
+- [x] Indexing strategy: composite `(show_id, state)` index for "show seat
+      availability for show X", expanded with the second real branch —
+      a `(user_id, created_at)` index on `BOOKING` for the "my bookings"
+      lookup, and why that's a separate index rather than reusing the
+      seat-inventory one (different table, different access pattern)
 - [x] SQL vs NoSQL at the object level: relational for bookings/payments
       (needs transactions), Redis alongside it for the seat-hold TTL —
       deliberately not a schema table
