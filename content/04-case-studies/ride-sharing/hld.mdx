@@ -1,0 +1,803 @@
+---
+title: "Ride-Sharing: High-Level Design"
+---
+
+Uber's hard problem isn't drawing a car icon moving on a map — it's that
+both sides of the match are moving continuously, in both directions, all
+the time. A rider requesting a trip needs a driver assigned in low
+single-digit seconds, out of a pool of drivers who are themselves driving
+around, going on and off duty, and finishing other trips, second by
+second, across an entire city.
+
+## Problem framing
+
+Two coupled hard problems, not one:
+
+- **Find the nearest available driver**, fast, among millions of moving
+  points citywide — this is a **geospatial-indexing problem first**, not a
+  generic matching/queueing problem. "Scan every driver row and compute
+  distance to the rider" is an O(n) table scan against a table that's
+  being rewritten every few seconds by every driver in the city — it
+  doesn't survive contact with a dense downtown at rush hour.
+- **Price the trip fairly** when supply and demand can swing sharply
+  minute to minute — a concert letting out, a rainstorm starting, a
+  stadium emptying all pull demand into a small area faster than drivers
+  can physically reposition into it.
+
+<Point icon="clock">
+  A rider opening the app expects an assigned driver in ~2-5 seconds. That
+  budget has to cover: finding candidate drivers, ranking them, sending an
+  offer, and getting an acceptance — not just the search step alone.
+</Point>
+<Point icon="branch">
+  Unlike Ticketmaster's checkout, which is a single hot resource contended
+  by many buyers, ride matching is many-to-many: many riders and many
+  drivers, both moving, matched continuously across a whole city at once.
+</Point>
+
+{/* concept-dependency: HLD-02 not yet built, explained inline */}
+The reason this is a geospatial-indexing problem rather than a plain
+matching problem: matching algorithms (bipartite matching, greedy
+assignment) assume you already have a short list of candidates to choose
+between. Getting from "every driver in the city" down to "the ~20 drivers
+actually near this rider" is the part a naive design gets wrong, and it's
+solved with a spatial index, not a smarter matching algorithm.
+
+<QuizItem
+  question="Why is 'geospatial indexing' called out as a separate problem from 'matching,' rather than folding both into one 'find and assign a driver' step?"
+  answer="Because they solve different things: geospatial indexing narrows millions of moving drivers down to a small nearby candidate set fast; matching then decides which candidate to assign. A fast matching algorithm run against an unindexed full scan of every driver in the city is still slow, because the bottleneck is finding candidates, not choosing among them."
+/>
+
+## Requirements & capacity estimate
+
+**Functional requirements:**
+
+- Rider requests a ride: pickup location, destination, ride type
+  (economy / pool / premium)
+- System matches the rider to a nearby available driver
+- Driver can accept or reject (bounded timeout) a match offer
+- Rider and driver see live location tracking during the trip
+- System computes ETA — to pickup, and to destination
+- System computes trip price, including surge/dynamic pricing
+- Trip moves through a defined lifecycle: requested → matched → en route
+  to pickup → in progress → completed / cancelled
+- Rider and driver rate each other after trip completion
+
+**Non-functional requirements:**
+
+- Matching latency: assigned driver in ~2-5s, even in dense cities
+- Location freshness: driver position updates reach nearby searches
+  within ~2-4s — drivers ping every few seconds, and briefly stale
+  location is an acceptable trade-off for availability
+- Scale: ~1M+ concurrent active trips globally at peak, tens of millions
+  of location pings/sec system-wide, matching decisions made per
+  city/region independently
+- Availability over strict consistency for driver *location* — an
+  occasional match against a driver whose position moved slightly is
+  recoverable
+- Strong consistency for "one driver, one active trip at a time" — no
+  double-dispatch of the same driver
+
+**Out of scope for this lesson:** payment processing internals, driver
+background-check/onboarding, turn-by-turn navigation rendering (the
+routing/ETA engine is an external dependency here, not designed from
+scratch), fraud/fake-GPS detection, driver incentive/bonus programs.
+
+**Back-of-envelope math:**
+
+<KeyStat
+  value="~2.5M writes/sec"
+  label="driver location pings, one large metro region"
+  detail="500,000 active drivers in a metro region, each pinging location every 4 seconds → 500,000 ÷ 4 ≈ 125,000 writes/sec for that one region. A handful of dense metros running concurrently at peak pushes system-wide location writes into the low millions/sec — this is why the requirement targets 'tens of millions of pings/sec system-wide,' aggregated across many independently-scaled regions, not one global counter."
+/>
+
+<KeyStat
+  value="~800 matches/sec"
+  label="ride requests at peak, one dense city"
+  detail="A dense city the size of NYC or SF can see on the order of 50,000-70,000 ride requests/hour at evening peak → roughly 50,000 ÷ 3,600 ≈ 14 requests/sec sustained, spiking several times higher (~50-80/sec) around bar close or a big event letting out. Scaled across ride types and a busier global metro, low hundreds to ~800 matching decisions/sec per city at the very peak is the number the matching service has to sustain — small compared to location-ping volume, but each one has a hard few-second latency budget."
+/>
+
+The ping-write volume dwarfs the matching-decision volume by roughly
+1000:1 — which is exactly why the two are architected as separate
+services below: location ingestion is a high-throughput, low-latency
+write path into an in-memory index, while matching is a lower-volume,
+higher-compute read-and-rank path against that index.
+
+## Architecture
+
+<D2Diagram
+  title="System overview"
+  type="architecture"
+  chart={`
+direction: right
+rider: Rider App {
+  icon: "https://icons.terrastruct.com/essentials%2F227-smartphone.svg"
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+driver: Driver App {
+  icon: "https://icons.terrastruct.com/essentials%2F227-smartphone.svg"
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+gw: API Gateway {
+  style.fill: "#5b4fbf"
+  style.font-color: "#ffffff"
+}
+loc: Location Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+match: Matching / Dispatch Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+price: Pricing Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+trip: Trip Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+notify: Notification Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+routing: Routing / ETA Engine (external) {
+  style.fill: "#4b5262"
+  style.font-color: "#ffffff"
+}
+
+rider -> gw
+driver -> gw
+gw -> loc
+gw -> match
+gw -> trip
+match -> loc: "candidate query"
+match -> price: "fare quote"
+match -> routing: "ETA"
+trip -> notify
+`}
+/>
+
+*Rider and driver apps both go through the same gateway. Location updates
+and matching are separate services because they scale on different
+axes — location ingestion on write throughput, matching on request
+latency — each with its own datastore, described in the deep dives below.*
+
+<D2Diagram
+  title="Location ingestion path"
+  type="architecture"
+  chart={`
+driver: Driver App {
+  style.fill: "#3b6fd6"
+  style.font-color: "#ffffff"
+}
+loc: Location Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+geoidx: Geospatial Index (in-memory) {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+hist: Location History Store {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+
+driver -> loc: "ping every ~4s"
+loc -> geoidx: "upsert cell membership\\n(eventually consistent, ~2-4s staleness)"
+loc -> hist: "append-only write\\n(trip playback, analytics)"
+`}
+/>
+
+*Every driver ping does two different-shaped writes: a fast in-memory
+upsert into the geospatial index (what matching reads), and a durable
+append into a history store (what trip playback and analytics read) —
+splitting them means a slow durable write never blocks the fast path that
+search latency depends on.*
+
+## Deep dives
+
+### Geospatial indexing for driver search
+
+The candidate-set filter that gets "all drivers in the city" down to
+"drivers actually worth ranking" before any distance math runs.
+
+<D2Diagram
+  title="Geohash vs. H3 hex grid"
+  type="architecture"
+  chart={`
+geohash: Geohash cell (square) {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+h3: H3 cell (hexagon) {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+gnote: "8 neighbors, but corner\\nneighbors are ~1.4x farther\\nthan edge neighbors" {
+  style.fill: "#4b5262"
+  style.font-color: "#ffffff"
+}
+hnote: "6 neighbors, all at\\nequal distance from center" {
+  style.fill: "#4b5262"
+  style.font-color: "#ffffff"
+}
+
+geohash -> gnote
+h3 -> hnote
+`}
+/>
+
+- **Geohash**: encodes lat/lon into a base-32 string; shared prefix length
+  = shared bounding box. Cheap to compute and index (it's just a string
+  prefix), but a rider standing 5 meters from a cell boundary has nearby
+  drivers sitting in the *adjacent* cell that a naive "query my own cell"
+  lookup misses entirely — the **boundary-edge problem**. The fix is
+  always querying the cell plus its 8 immediate neighbors, never the exact
+  cell alone.
+- **Quadtree**: recursively subdivides space into 4 quadrants, going
+  deeper where driver density is higher. Naturally density-adaptive — a
+  sparse suburb gets large cells, a dense downtown gets small ones — but
+  it's a mutable tree structure under constant rebalancing as drivers
+  move, which adds real implementation and locking complexity at write
+  volume.
+- **H3 (hexagonal hierarchical index)**: tiles the world in hexagons at
+  multiple resolutions. A hexagon has exactly 6 neighbors, **all at equal
+  distance from the center cell** — unlike a square grid, where the 4
+  edge-adjacent neighbors are closer than the 4 corner-adjacent ones. That
+  uniformity means "expand outward by one ring" behaves consistently in
+  every direction, which is what the radius-expansion search below
+  depends on. This is why Uber built and open-sourced H3 for exactly this
+  problem.
+
+<QuizItem
+  question="Why does a square geohash grid distort neighbor distance in a way H3's hexagons don't?"
+  answer="A square cell has 8 neighbors, but only 4 share an edge — the other 4 share just a corner and sit roughly 1.4x (√2) farther from the center. A hexagon's 6 neighbors all share a full edge and sit at equal distance, so a 'ring of neighbors' search behaves the same in every direction instead of favoring some directions over others."
+/>
+
+### Nearest-driver search / radius expansion
+
+<D2Diagram
+  title="Ring-by-ring candidate expansion"
+  type="sequence"
+  chart={`
+shape: sequence_diagram
+match: Matching Service
+idx: Geospatial Index
+
+match -> idx: "query rider's H3 cell (ring 0)"
+idx -> match: "1 driver found"
+match -> idx: "expand: query ring 1 (6 neighbor cells)"
+idx -> match: "9 drivers found (10 total)"
+match -> match: "rank 10 candidates by real ETA"
+`}
+/>
+
+*The service never queries "all drivers in the city" — it starts at the
+rider's own cell and expands outward one ring at a time only until it has
+enough candidates, then does the expensive real-distance/ETA computation
+on that small set, not the whole city.*
+
+- Start at the rider's H3 cell (or geohash cell); if it has too few
+  available drivers (e.g. fewer than ~10), expand to the ring of
+  immediate neighbors, then the next ring, stopping as soon as a
+  target candidate count is reached.
+- **Why not rank by raw cell distance and stop there:** cell adjacency is
+  a cheap pre-filter, not the final ranking — actual road distance/ETA
+  from the routing engine is what determines who's really "nearest,"
+  since a driver one cell away on the wrong side of a river can be
+  farther in real travel time than one two cells away with a direct
+  route.
+- **Sparse-area edge case:** in a low-density suburb, ring expansion might
+  need to go 3-4 rings out before finding any driver at all — the search
+  radius is adaptive, not fixed, precisely because density varies by
+  neighborhood and time of day.
+
+<QuizItem
+  question="Why does the matching service rank candidates by real ETA from a routing engine instead of just picking the driver in the nearest H3 cell?"
+  answer="Cell adjacency only approximates straight-line proximity, not actual travel time — a driver in the same cell might be on the far side of a river or a highway with no direct route, while a driver one ring out might have a faster real path. Cell-ring expansion is a cheap way to build a small candidate set fast; real ETA ranking is what actually orders them."
+/>
+
+### Matching strategy: greedy vs. batched
+
+<D2Diagram
+  title="Greedy vs. batched matching window"
+  type="architecture"
+  chart={`
+greedy: Greedy {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+greedy_out: "assign nearest available\\ndriver immediately" {
+  style.fill: "#4b5262"
+  style.font-color: "#ffffff"
+}
+batch: Batched window {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+batch_out: "collect N requests + drivers\\nover ~2-3s, solve as one\\nbipartite matching problem" {
+  style.fill: "#4b5262"
+  style.font-color: "#ffffff"
+}
+
+greedy -> greedy_out
+batch -> batch_out
+`}
+/>
+
+- **Greedy (assign-first-available)**: as soon as a request arrives, rank
+  nearby candidates and offer to the top one. Lowest possible latency per
+  request, but locally optimal only — it can assign the closest driver to
+  rider A a moment before a slightly-farther-but-actually-better-overall
+  assignment would have served both A and a rider B who requests one
+  second later.
+- **Batched matching window**: hold incoming requests and available
+  drivers for a short window (a few seconds), then solve a bipartite
+  matching problem over the whole batch at once (e.g. minimizing total
+  pickup distance across all pairs, a Hungarian-algorithm-style
+  assignment). Produces better aggregate outcomes — fewer total miles
+  driven empty, fairer distribution — at the cost of every rider in the
+  batch waiting for the window to close before getting an answer.
+- **What real systems do**: a short batching window (on the order of a
+  few seconds) in dense areas where enough concurrent requests arrive to
+  make batch optimization worthwhile, falling back toward greedy
+  assignment in sparse areas or off-peak periods where there's rarely more
+  than one request to batch with anyway.
+
+<QuizItem
+  question="In a sparse suburb at 2am with one ride request every few minutes, does batched matching still make sense?"
+  answer="No — batching only pays off when there are multiple concurrent requests and drivers to jointly optimize over. With effectively one request at a time, the batch window just adds latency with nothing to optimize against, so greedy assignment is strictly better in that regime."
+/>
+
+### Driver acceptance / reassignment flow
+
+<D2Diagram
+  title="Offer cascade on timeout or reject"
+  type="state"
+  chart={`
+ranked: Ranked candidates found {
+  style.fill: "#4b5262"
+  style.font-color: "#ffffff"
+}
+offered_a: Offer sent to Driver A {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+accepted: Trip matched {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+offered_b: Offer sent to Driver B (next ranked) {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+requeued: Request re-enters candidate search {
+  style.fill: "#4b5262"
+  style.font-color: "#ffffff"
+}
+
+ranked -> offered_a
+offered_a -> accepted: "accepts within 12s"
+offered_a -> offered_b: "timeout or reject"
+offered_b -> accepted: "accepts within 12s"
+offered_b -> requeued: "timeout or reject,\\nno more ranked candidates nearby"
+`}
+/>
+
+- Offer goes to exactly one driver at a time, never broadcast to several
+  at once — broadcasting risks two drivers both tapping "accept" in the
+  same instant, which just moves the double-dispatch race earlier instead
+  of avoiding it.
+- **Bounded timeout** (commonly ~10-15s): long enough for a driver to
+  glance at pickup distance and fare before deciding, short enough that a
+  slow-to-respond driver doesn't stall the rider's whole match.
+- On timeout or explicit reject, the offer **cascades** to the
+  next-ranked candidate from the same candidate set — no need to re-query
+  the geospatial index if the list still has unexhausted candidates.
+- If the ranked list is exhausted (everyone nearby rejected or timed
+  out), the request re-enters the search — either a fresh candidate query
+  against a possibly-changed driver set, or back into the next batching
+  window.
+
+<QuizItem
+  question="Why does an offer go to one driver at a time instead of broadcasting to the top 3 candidates simultaneously and taking whichever accepts first?"
+  answer="Broadcasting to multiple drivers means more than one could accept before the system reacts, recreating the double-dispatch problem the claim step is supposed to prevent — it would just move the race from 'who gets offered' to 'who gets un-offered after accepting,' which is a worse user experience for the rejected driver."
+/>
+
+### Surge / dynamic pricing
+
+<D2Diagram
+  title="Surge multiplier feedback loop"
+  type="architecture"
+  chart={`
+demand: Open ride requests\\n(per H3 cell, rolling window) {
+  style.fill: "#4b5262"
+  style.font-color: "#ffffff"
+}
+supply: Available drivers\\n(per H3 cell, rolling window) {
+  style.fill: "#4b5262"
+  style.font-color: "#ffffff"
+}
+price: Pricing Service {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+fare: "base fare x multiplier" {
+  style.fill: "#b8722a"
+  style.font-color: "#ffffff"
+}
+
+demand -> price: "requests/min"
+supply -> price: "drivers available"
+price -> fare: "ratio -> multiplier,\\ndecays toward 1.0x as\\nsupply catches up"
+`}
+/>
+
+- Computed **per geo-cell**, not citywide — a stadium letting out spikes
+  demand in one H3 cell while the rest of the city is normal, and a
+  citywide average would wash that out and under-price exactly the area
+  that needs the price signal to attract drivers.
+- Multiplier = a function of the open-requests-to-available-drivers ratio
+  in that cell over a rolling window (e.g. the last 2-3 minutes), not the
+  instantaneous ratio — smoothing avoids reacting to a single noisy
+  moment (one request arriving 100ms before another).
+- **Decay/cooldown, not a hard reset**: once supply catches up, the
+  multiplier ramps back down gradually rather than snapping to 1.0x
+  instantly — an abrupt drop would itself create a demand spike (everyone
+  who was waiting out the surge requests at once) that recreates the
+  imbalance the multiplier just fixed. This is the same oscillation
+  problem autoscalers solve with cooldown windows, applied to price
+  instead of instance count.
+- Surge is shown to the rider **before** they confirm, as a fare quote
+  from the pricing service — matching and pricing are separate calls so a
+  fare can be shown and locked before a driver is actually assigned.
+
+<QuizItem
+  question="Why does the surge multiplier decay gradually back to baseline instead of snapping back to 1.0x the instant supply catches up?"
+  answer="An instant snap-back would itself trigger a demand spike — riders who were waiting out the high price would all request at once — recreating the same supply/demand imbalance the multiplier had just corrected. A gradual decay avoids that oscillation, the same way cooldown windows prevent autoscaler flapping."
+/>
+
+### Trip lifecycle / state propagation
+
+The trip's state is the single source of truth both apps render from and
+every service reacts to — matching, notification, and billing all key off
+of it rather than each maintaining their own notion of "where is this
+trip right now." Full transition set (including cancellation branches) is
+in the worked example below.
+
+### Live tracking / ETA during an active trip
+
+- **Pre-match search pings** (covered above) are index-based: the
+  location service upserts the driver's position into the geospatial
+  index, and matching reads from that index on demand. No one is
+  "watching" any single driver.
+- **In-trip pings** are push-based instead: once a trip is matched, the
+  driver's location updates are streamed directly to the two parties who
+  actually need them (the matched rider, and the rider's app showing
+  driver-to-pickup ETA) via a persistent connection (WebSocket or
+  long-lived push), not through the shared geospatial index.
+- **Why the split**: pushing every driver's every ping to every nearby
+  rider's screen doesn't scale — most riders don't care about most
+  drivers. Once a trip exists, there are exactly two interested parties,
+  so a targeted push is cheap; before a trip exists, the index-based pull
+  model is what lets matching query "who's nearby" without a live
+  subscription per rider.
+
+<QuizItem
+  question="Why do in-trip location updates use a different delivery mechanism (push to two parties) than pre-match search (index reads)?"
+  answer="Before a match, matching needs to query 'who's near this rider' on demand across potentially many drivers — an index read model fits that. Once matched, there are exactly two interested parties (this rider, this driver) who need every update immediately, so a targeted push connection is both simpler and cheaper than having them poll or query an index for a driver they're already locked to."
+/>
+
+## Trade-offs
+
+<CompareTable
+  title="Geospatial index: geohash vs. quadtree vs. H3"
+  rows={[
+    {
+      approach: "Geohash",
+      pros: ["Cheap to compute/index — just a string prefix", "Simple to reason about and debug"],
+      cons: ["Boundary-edge problem: must always query neighbor cells too", "Fixed grid — doesn't adapt to density"],
+    },
+    {
+      approach: "Quadtree",
+      pros: ["Density-adaptive — small cells where drivers are dense", "No fixed global cell size to tune"],
+      cons: ["Mutable tree structure under constant rebalancing at write volume", "More implementation/locking complexity"],
+    },
+    {
+      approach: "H3 (hex grid)",
+      pros: ["Uniform neighbor distance — no corner-vs-edge distortion", "Multi-resolution, well-tooled (open-sourced by Uber), good real-world track record at this exact problem"],
+      cons: ["Hexagons can't tile perfectly at global scale — 12 pentagon cells exist at the icosahedron's vertices as an edge case"],
+      chosenBecause: "Neighbor-ring expansion behaves consistently in every direction, which the radius-expansion search directly depends on",
+    },
+  ]}
+/>
+
+<CompareTable
+  title="Matching strategy: greedy vs. batched window"
+  rows={[
+    {
+      approach: "Greedy (assign first available)",
+      pros: ["Lowest latency per individual request", "Simple to reason about and debug"],
+      cons: ["Locally optimal only — can miss a better overall assignment a moment later"],
+      chosenBecause: "Right default in sparse/off-peak conditions where there's rarely more than one request to batch with",
+    },
+    {
+      approach: "Batched matching window",
+      pros: ["Better aggregate outcome — less total empty-driving distance, fairer distribution"],
+      cons: ["Every rider in the batch waits for the window to close, even if their match was obvious immediately"],
+      chosenBecause: "Right default in dense areas where enough concurrent requests exist to actually optimize over",
+    },
+  ]}
+/>
+
+<CompareTable
+  title="Consistency: driver location vs. driver claim"
+  rows={[
+    {
+      approach: "Eventual consistency (location index)",
+      pros: ["Scales to tens of millions of pings/sec without a global write bottleneck", "Brief staleness (~2-4s) is recoverable — worst case is offering a driver who moved slightly"],
+      cons: ["A match can briefly be based on a slightly-stale position"],
+      chosenBecause: "Used for driver position/search — availability matters more than exactness here",
+    },
+    {
+      approach: "Strong consistency (driver claim)",
+      pros: ["Guarantees exactly one active trip per driver — no double-dispatch"],
+      cons: ["Needs an atomic claim operation (e.g. conditional write), adds a bit of latency to the accept step"],
+      chosenBecause: "Used for 'driver accepts this specific offer' — a double-dispatch is not recoverable the way a stale position is",
+    },
+  ]}
+/>
+
+- **Push vs. pull for offer delivery and location**: offers are pushed to
+  the driver app (a driver shouldn't have to poll to find out they got a
+  ride) via the same persistent connection used for in-trip tracking;
+  pre-match location updates are pull-style from matching's point of
+  view — matching queries the index when it needs candidates, rather than
+  every driver's ping fanning out to every nearby matching request. Push
+  fits "exactly one recipient needs this immediately"; pull fits "many
+  possible readers, most of whom don't need this specific update at all."
+
+<QuizItem
+  question="Why is the driver-claim step held to strong consistency while driver location is allowed to be eventually consistent, in the same system?"
+  answer="They have different recoverable-error costs: a slightly stale driver position just means the next ranking pass corrects itself, but a double-dispatched driver (assigned to two trips at once) is a real-world conflict that can't be quietly fixed after the fact — one rider is left stranded. The invariant that actually needs strong consistency is narrow (one claim, one driver), so only that step pays the consistency cost."
+/>
+
+## Worked example: one ride request end-to-end
+
+Priya opens the app in a dense downtown area at 6:15pm and requests a
+ride to the airport. Trace what happens from request to fare.
+
+<D2Diagram
+  title="End-to-end trip trace"
+  type="sequence"
+  chart={`
+shape: sequence_diagram
+rider: Priya (rider)
+match: Matching Service
+idx: Geospatial Index
+price: Pricing Service
+a: Driver A
+b: Driver B
+trip: Trip Service
+
+rider -> match: "request ride, pickup + destination"
+match -> idx: "query rider cell + ring 1"
+idx -> match: "14 candidates"
+match -> match: "rank by ETA, top = Driver A"
+match -> price: "get fare quote"
+price -> match: "base fare 18, surge 1.2x = 21.60"
+match -> a: "offer: pickup 3 min away, fare 21.60"
+a -> match: "(12s timeout, no response)"
+match -> b: "offer cascades to Driver B"
+b -> match: "accepts"
+match -> trip: "create trip, claim Driver B"
+trip -> rider: "driver assigned, live ETA"
+trip -> b: "trip started, navigate to pickup"
+`}
+/>
+
+Priya's request lands at the matching service, which queries her H3 cell
+plus its immediate ring and gets back 14 nearby candidates. It ranks them
+by real ETA, not raw distance, and Driver A comes out on top — three
+minutes away. In parallel, the pricing service returns a fare quote:
+$18 base fare with a 1.2x surge multiplier applied for this cell right
+now, for $21.60. Driver A's offer times out after 12 seconds with no
+response — maybe they're mid-conversation with a previous rider — so the
+offer cascades to Driver B, next on the ranked list, who accepts within
+four seconds. The trip service creates the trip record, atomically claims
+Driver B (so no other rider's matching pass can also claim him), and both
+Priya's and Driver B's apps switch to live push-based tracking. Once
+Driver B picks Priya up and the trip actually begins, the fare locks in
+at the $21.60 quoted — later demand changes in that cell no longer affect
+this already-matched trip.
+
+<D2Diagram
+  title="Trip lifecycle state machine"
+  type="state"
+  chart={`
+requested: REQUESTED {
+  style.fill: "#4b5262"
+  style.font-color: "#ffffff"
+}
+matched: MATCHED {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+enroute: EN_ROUTE_TO_PICKUP {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+inprogress: IN_PROGRESS {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+completed: COMPLETED {
+  style.fill: "#0e7c86"
+  style.font-color: "#ffffff"
+}
+cancelled: CANCELLED {
+  style.fill: "#b23a48"
+  style.font-color: "#ffffff"
+}
+
+requested -> matched: "driver accepts offer"
+requested -> cancelled: "rider cancels /\\nno driver found"
+matched -> enroute: "driver starts navigating"
+matched -> cancelled: "rider or driver cancels\\n(cancellation fee may apply)"
+enroute -> inprogress: "driver arrives, rider picked up"
+enroute -> cancelled: "rider or driver cancels\\n(cancellation fee may apply)"
+inprogress -> completed: "drop-off confirmed"
+inprogress -> cancelled: "trip aborted mid-ride\\n(rare — safety/emergency)"
+`}
+/>
+
+*Cancellation is reachable from every pre-completion state, by either
+party, not just as a single "cancelled" branch off the happy path — a
+rider can cancel before pickup, a driver can cancel after accepting but
+before arriving, and (rarely) a trip can be aborted mid-ride.*
+
+<QuizItem
+  question="In the worked example, why does the fare stay at $21.60 even if the surge multiplier in that cell changes between matching and pickup?"
+  answer="The fare quote is locked in at the point of matching, tied to the specific trip, not recomputed live off the current cell multiplier — otherwise a rider's price could change mid-negotiation for reasons entirely outside their control, and a driver couldn't reliably know what a trip pays before accepting it."
+/>
+
+## Interview angle
+
+**"How do you prevent two riders from being matched to the same driver at
+the same time?"** The offer/accept step needs an atomic claim, the same
+shape as Ticketmaster's seat hold: when a driver accepts, the trip service
+does a conditional write — e.g. `SET driver:B:status trip_id NX` or a
+DB row update guarded by `WHERE status = 'available'` — so only the first
+accepting write wins and a concurrent second claim attempt visibly fails
+rather than silently overwriting. Combined with sending only one offer at
+a time (covered above), this makes double-dispatch structurally
+prevented, not just unlikely.
+
+**"How does the design change for scheduled/advance-booked rides?"** A
+scheduled ride can't run through live radius-expansion search hours
+before the trip — instead it's stored as a future intent (pickup time,
+location) and a separate scheduler wakes it up shortly before the pickup
+window, at which point it re-enters the same on-demand matching flow used
+here. The extra design surface is making sure enough drivers are likely
+to be available at that future time and place (a supply-forecasting
+concern, not a matching-algorithm concern) and handling a "no driver
+found" fallback gracefully since there's a promise already made to the
+rider.
+
+**"How would you extend this to pooled/shared rides?"** Pooling turns a
+single rider-to-driver match into a small route-optimization problem: the
+matching step now has to find a driver whose current route can absorb an
+additional pickup/drop-off pair without excessive detour for existing
+passengers, and the trip's state machine needs multiple concurrent
+rider legs instead of one. Practically this means adding a
+route-re-optimization step after candidate ranking — given a driver
+already mid-route, does inserting this new pickup/drop-off pair keep
+everyone's added detour under a threshold — rather than a new matching
+algorithm from scratch.
+
+## Practice & Self-Check
+
+### Recap quiz
+
+<QuizItem
+  question="Why does a naive 'scan every driver and compute distance' approach fail at Uber's scale, even with a fast database?"
+  answer="Distance computation against every driver in a city is O(n) work per request, and the driver table itself is being rewritten every few seconds by every driver's location ping — the bottleneck isn't computing one distance, it's the sheer number of drivers to check per request, which a geospatial index avoids by pre-narrowing to a small nearby candidate set."
+/>
+
+<QuizItem
+  question="What specific property of H3's hexagonal cells makes ring-expansion search behave more predictably than a geohash's square cells?"
+  answer="A hexagon has 6 neighbors, all sharing a full edge and sitting at equal distance from the center. A square has 8 neighbors, but the 4 corner-adjacent ones are about 1.4x farther than the 4 edge-adjacent ones, so 'expand outward by one ring' is distance-uniform in H3 but distorted in a square grid."
+/>
+
+<QuizItem
+  question="When is batched-window matching worth its added latency compared to greedy assignment?"
+  answer="Only when there are enough concurrent requests and drivers in the same area to actually optimize an assignment across — dense areas at peak. In sparse areas or off-peak times, with rarely more than one request to batch with, the batch window just adds delay with nothing to jointly optimize."
+/>
+
+<QuizItem
+  question="What triggers a surge multiplier to rise in a given area, and why is it computed per-cell rather than citywide?"
+  answer="It rises when the ratio of open ride requests to available drivers in that cell, over a rolling window, climbs — e.g. a stadium letting out. Computing it per-cell instead of citywide keeps the signal local to where supply is actually short; a citywide average would dilute a sharp local spike and under-price exactly the area that needs it."
+/>
+
+<QuizItem
+  question="Why does the surge multiplier decay gradually instead of resetting to 1.0x the moment supply and demand rebalance?"
+  answer="An instant reset would itself cause a demand spike — riders who'd been waiting out the higher price would all request at once — recreating the same imbalance the multiplier had just corrected. A gradual decay avoids that oscillation."
+/>
+
+<QuizItem
+  question="Driver location updates are eventually consistent, but claiming a driver for a trip must be strongly consistent. Why isn't the whole system just built one way or the other?"
+  answer="They protect against different failure costs: stale location just means a match might briefly target a driver who moved slightly (self-correcting on the next search pass), while a double-claimed driver is an unrecoverable real-world conflict. Applying strong consistency everywhere would bottleneck the tens-of-millions-of-pings/sec location path for no benefit; applying eventual consistency to the claim step would allow double-dispatch."
+/>
+
+<QuizItem
+  question="An offer to Driver A times out with no response. What happens next, and why doesn't the system re-query the geospatial index immediately?"
+  answer="The offer cascades to the next-ranked candidate (Driver B) from the same already-computed candidate list, because that list is still valid for the few seconds this took — re-querying the index for every single timeout would add latency without meaningfully changing the nearby-driver set. The index is only re-queried if the whole ranked list is exhausted."
+/>
+
+### Open design challenge
+
+**Extend the matching service to support driver preferences (e.g. a
+driver only wants airport trips) without breaking the nearest-match
+latency guarantee.** The current design ranks candidates purely by
+ETA/distance. Now some drivers want to opt into filters — only airport
+trips, only trips under 15 minutes, no pooled rides — and the match
+should respect those without re-scanning drivers one by one or blowing
+the ~2-5s latency budget. How do you represent a driver's preferences so
+they can be checked cheaply during ranking? Where does the filtering step
+happen relative to the ring-expansion candidate search? What happens if a
+rider's request matches no preference-compatible driver nearby, but does
+match drivers who'd normally be filtered out?
+
+<details>
+<summary>Reference approach (click to reveal)</summary>
+
+- **Represent preferences as a cheap filter, not a fetch.** Store each
+  online driver's active preference flags (e.g. a small bitmask or a set
+  of tags: `airport_only`, `max_trip_15m`, `no_pool`) alongside their
+  entry in the geospatial index itself, not in a separate lookup — so
+  checking a candidate's preferences during ranking costs an in-memory
+  field read, not a second network round trip per candidate.
+- **Filter after candidate generation, not before.** Ring-expansion
+  search still runs unchanged to build the ~10-20 nearest candidates by
+  distance; preference filtering happens as a cheap in-memory pass over
+  that already-small set, discarding incompatible drivers before the
+  real-ETA ranking step. Filtering the index itself per-request (e.g. "only
+  index airport-only drivers for this query") would need a differently
+  partitioned index per preference combination, which doesn't scale to
+  arbitrary preference combinations.
+- **If the request needs a specific ride attribute** (e.g. the rider's
+  destination actually is the airport), tag the request the same way and
+  only match against drivers whose preference set is compatible —
+  equivalent to a set-intersection check per candidate, still O(candidate
+  count), not O(all drivers).
+- **Handling the "no compatible driver nearby" case**: expand the ring
+  search further before falling back — the preference filter reduces the
+  candidate pool, so the system may need to search a slightly wider
+  radius than a preference-free match would. If still no match, degrade
+  explicitly: either widen further with a longer quoted ETA, or (product
+  decision, not an architectural one) offer the rider a match with a
+  driver whose preference doesn't strictly apply if none of the driver's
+  preferences veto it outright — the design surfaces the trade-off rather
+  than silently picking one.
+- **Preferences don't change the O(n) shape of the hot path.** Because
+  filtering happens over the small ranked candidate set, not over the
+  full driver population, the ring-expansion search stays the dominant
+  cost and the latency budget is preserved — preference matching adds a
+  constant-time pass over a set that's already small by construction.
+
+</details>
+
+<Rubric
+  items={[
+    "Stored driver preferences alongside the geospatial index entry (or somewhere equally cheap to read during ranking), not behind a second network call per candidate",
+    "Applied preference filtering after ring-expansion candidate generation, not as a separate full-index scan per preference combination",
+    "Addressed what happens when no preference-compatible driver is found nearby, rather than assuming one is always available",
+    "Explicitly reasoned about why this keeps the matching hot path close to its original latency budget (filtering a small set vs. scanning a large one)",
+    "Named a concrete data representation for preferences (e.g. a tag set or bitmask), not just 'store the preferences somewhere'",
+  ]}
+/>
