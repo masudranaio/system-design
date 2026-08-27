@@ -71,14 +71,21 @@ existing lessons not yet migrated) set color explicitly per node via
 automatic keyword classification the way Mermaid diagrams do. Use these
 values consistently so diagrams read as one system:
 
-| Role | Fill (light) | Fill (dark) | Use for |
-|---|---|---|---|
-| client | `#3b6fd6` | `#6d93e8` | browsers, mobile apps, end users |
-| network | `#5b4fbf` | `#9c93e0` | CDN, gateway, load balancer, waiting room |
-| service | `#0e7c86` | `#34c7b8` | application services, workers |
-| cache | `#b8722a` | `#e8a659` | Redis, in-memory caches |
-| datastore | `#b23a48` | `#f87171` | databases, persistent stores |
-| queue | `#4b5262` | `#9ba3b4` | message queues, event streams |
+| Role | Fill (D2 `style.fill`) | Stroke (D2 `style.stroke`) | Mermaid dark-mode fill | Use for |
+|---|---|---|---|---|
+| client | `#3b6fd6` | `#2a52a8` | `#6d93e8` | browsers, mobile apps, end users |
+| network | `#5b4fbf` | `#453a94` | `#9c93e0` | CDN, gateway, load balancer, waiting room |
+| service | `#0e7c86` | `#0a5d64` | `#34c7b8` | application services, workers |
+| cache | `#b8722a` | `#8f5a20` | `#e8a659` | Redis, in-memory caches |
+| datastore | `#b23a48` | `#8a2c37` | `#f87171` | databases, persistent stores |
+| queue | `#4b5262` | `#363b47` | `#9ba3b4` | message queues, event streams |
+
+The "Fill"/"Stroke" columns are what D2 diagrams use (a single static
+value for both themes — see below). The "Mermaid dark-mode fill"
+column only applies to Mermaid's `<DiagramPanel>` path, which
+classifies nodes by keyword and swaps this value in via theme-reactive
+CSS (`lib/diagram-roles.ts` + `app/globals.css`) — not relevant when
+writing D2 source.
 
 Always pair a colored fill with `style.font-color: "#ffffff"` — every
 role color above is dark/saturated enough that white label text is the
@@ -87,6 +94,50 @@ only choice that stays legible. Reference `lib/diagram-icons.ts`'s
 a new one per lesson. Local icon data URIs must be quoted in D2 source
 (`icon: "data:image/svg+xml;base64,..."`) — an unquoted value breaks
 D2's parser on the `:`/`+`/`=` characters inside the base64 payload.
+D2's SVG output is static (not theme-reactive like Mermaid's
+class-based role coloring) — use the fill hex directly, the same value
+in both light and dark mode; the palette above is chosen to stay
+legible against either.
+
+**Standard chrome for every colored D2 node** (architecture and class
+alike) — this is what gives the diagrams a bold, ByteByteGo-style flat
+look instead of D2's plain default boxes:
+
+```
+style.shadow: true
+style.stroke-width: 2
+```
+
+Do **not** add `style.border-radius` to a `shape: class` node that has
+any edges connected to it — confirmed live: D2 emits a malformed SVG
+path for the connecting edge in that case (a stray `Z` closepath
+directly followed by coordinates, with no command letter — invalid SVG,
+logged as a console error in every browser). Verified via a minimal
+repro: `border-radius` alone on two connected class shapes reproduces
+it, `shadow` alone does not. Plain (non-class) shapes weren't affected
+in testing, but treat `border-radius` on any shape with connected edges
+as suspect and check the rendered page's console before shipping.
+
+**Class diagrams get the same 6-color palette, applied by domain role**
+(not literally the "client/network/service" infra meaning — reuse the
+hex values, remap the meaning to the class's role in the design):
+
+| Role color | Use for |
+|---|---|
+| service (teal) | The aggregate root / the class that coordinates or owns everything else in *this* diagram (only one per diagram) |
+| cache (amber) | Entities and value objects owned by the aggregate root |
+| client (blue) | External actors — people or agents that call into the system (`Customer`, `DeliveryAgent`) |
+| network (violet) | A credential, token, or connector object — something that references/links two other objects rather than being owned by either |
+| queue (gray) | A stub/reference node repeated from another diagram (e.g. `Package` shown again in an integration-context diagram) — signals "see the other diagram for this one's real fields," visually distinct from a fully-detailed entity |
+| datastore (red) | Rarely needed in class diagrams; reserve for a class that represents a persistence boundary if one appears |
+
+Keep a class's color consistent across every diagram it appears in
+(the aggregate root that's teal in one diagram should still read as
+"the coordinator" — teal — wherever it recurs, even as a stub).
+Every class node gets the standard chrome above plus its role's fill/
+stroke/font-color; don't leave any class shape on D2's unstyled
+default (flat navy header, no shadow) — that flat look is exactly what
+reads as low-effort next to a colored, shadowed one.
 
 ## Content-format standard (all new and retrofitted lessons)
 

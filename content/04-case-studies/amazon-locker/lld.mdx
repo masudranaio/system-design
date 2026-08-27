@@ -97,6 +97,11 @@ direction: right
 
 LockerLocation: {
   shape: class
+  style.fill: "#0e7c86"
+  style.stroke: "#0a5d64"
+  style.font-color: "#ffffff"
+  style.shadow: true
+  style.stroke-width: 2
   +locationId: String
   +address: String
   +status: LocationStatus
@@ -109,6 +114,11 @@ LockerLocation: {
 
 Compartment: {
   shape: class
+  style.fill: "#b8722a"
+  style.stroke: "#8f5a20"
+  style.font-color: "#ffffff"
+  style.shadow: true
+  style.stroke-width: 2
   +compartmentId: String
   +size: Size
   -status: CompartmentStatus
@@ -122,6 +132,11 @@ Compartment: {
 
 Package: {
   shape: class
+  style.fill: "#b8722a"
+  style.stroke: "#8f5a20"
+  style.font-color: "#ffffff"
+  style.shadow: true
+  style.stroke-width: 2
   +packageId: String
   +size: Size
   +customerId: String
@@ -133,6 +148,11 @@ Package: {
 
 AccessToken: {
   shape: class
+  style.fill: "#5b4fbf"
+  style.stroke: "#453a94"
+  style.font-color: "#ffffff"
+  style.shadow: true
+  style.stroke-width: 2
   +code: String
   +compartmentId: String
   +packageId: String
@@ -165,6 +185,11 @@ direction: right
 
 Order: {
   shape: class
+  style.fill: "#b8722a"
+  style.stroke: "#8f5a20"
+  style.font-color: "#ffffff"
+  style.shadow: true
+  style.stroke-width: 2
   +orderId: String
   +customerId: String
   -packages: Package list
@@ -173,6 +198,11 @@ Order: {
 
 Customer: {
   shape: class
+  style.fill: "#3b6fd6"
+  style.stroke: "#2a52a8"
+  style.font-color: "#ffffff"
+  style.shadow: true
+  style.stroke-width: 2
   +customerId: String
   +name: String
   +contact: String
@@ -180,12 +210,22 @@ Customer: {
 
 DeliveryAgent: {
   shape: class
+  style.fill: "#3b6fd6"
+  style.stroke: "#2a52a8"
+  style.font-color: "#ffffff"
+  style.shadow: true
+  style.stroke-width: 2
   +agentId: String
   +carrier: String
 }
 
 Reservation: {
   shape: class
+  style.fill: "#b8722a"
+  style.stroke: "#8f5a20"
+  style.font-color: "#ffffff"
+  style.shadow: true
+  style.stroke-width: 2
   +reservationId: String
   +orderId: String
   +locationId: String
@@ -195,14 +235,33 @@ Reservation: {
 
 LockerService: {
   shape: class
+  style.fill: "#0e7c86"
+  style.stroke: "#0a5d64"
+  style.font-color: "#ffffff"
+  style.shadow: true
+  style.stroke-width: 2
   +reserveCompartment(orderId, size): Reservation
   +depositPackage(agentId, packageId, size): AccessToken
   +pickup(code): Package
   +openExpiredCompartments(): Compartment list
 }
 
-Package: {shape: class}
-LockerLocation: {shape: class}
+Package: {
+  shape: class
+  style.fill: "#4b5262"
+  style.stroke: "#363b47"
+  style.font-color: "#ffffff"
+  style.shadow: true
+  style.stroke-width: 2
+}
+LockerLocation: {
+  shape: class
+  style.fill: "#4b5262"
+  style.stroke: "#363b47"
+  style.font-color: "#ffffff"
+  style.shadow: true
+  style.stroke-width: 2
+}
 
 Order -> Package: composes (1 -> *)
 Customer -> Order: places (1 -> *)
