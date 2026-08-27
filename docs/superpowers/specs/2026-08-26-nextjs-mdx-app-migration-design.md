@@ -17,6 +17,14 @@ workflow, Ticketmaster's HLD/LLD outline) is entirely unaffected — only
 the output format changes: `hld.html`/`lld.html` (self-contained
 artifacts) become `hld.mdx`/`lld.mdx` (MDX files rendered by this app).
 Ticketmaster's `CHECKLIST.md` needs no content changes.
+**Superseded (in part) by:**
+[2026-08-27-visual-design-system-refresh-design.md](2026-08-27-visual-design-system-refresh-design.md).
+That spec is now authoritative for this app's design tokens,
+typography, and diagram appearance/color pipeline (the "Design tokens"
+and diagram-related sections below are historical — read the refresh
+spec instead). This spec's component contracts (`DiagramPanel`,
+`QuizItem`, `Rubric`, `SectionTracker`, etc.) and folder structure are
+unaffected and still govern.
 
 ## Why this changed
 

@@ -71,33 +71,36 @@ existing lessons not yet migrated) set color explicitly per node via
 automatic keyword classification the way Mermaid diagrams do. Use these
 values consistently so diagrams read as one system:
 
-| Role | Fill (D2 `style.fill`) | Stroke (D2 `style.stroke`) | Mermaid dark-mode fill | Use for |
-|---|---|---|---|---|
-| client | `#3b6fd6` | `#2a52a8` | `#6d93e8` | browsers, mobile apps, end users |
-| network | `#5b4fbf` | `#453a94` | `#9c93e0` | CDN, gateway, load balancer, waiting room |
-| service | `#0e7c86` | `#0a5d64` | `#34c7b8` | application services, workers |
-| cache | `#b8722a` | `#8f5a20` | `#e8a659` | Redis, in-memory caches |
-| datastore | `#b23a48` | `#8a2c37` | `#f87171` | databases, persistent stores |
-| queue | `#4b5262` | `#363b47` | `#9ba3b4` | message queues, event streams |
+| Role | Authored `style.fill` (semantic key) | Authored `style.stroke` (semantic key) | Use for |
+|---|---|---|---|
+| client | `#3b6fd6` | `#2a52a8` | browsers, mobile apps, end users |
+| network | `#5b4fbf` | `#453a94` | CDN, gateway, load balancer, waiting room |
+| service | `#0e7c86` | `#0a5d64` | application services, workers |
+| cache | `#b8722a` | `#8f5a20` | Redis, in-memory caches |
+| datastore | `#b23a48` | `#8a2c37` | databases, persistent stores |
+| queue | `#4b5262` | `#363b47` | message queues, event streams |
 
-The "Fill"/"Stroke" columns are what D2 diagrams use (a single static
-value for both themes — see below). The "Mermaid dark-mode fill"
-column only applies to Mermaid's `<DiagramPanel>` path, which
-classifies nodes by keyword and swaps this value in via theme-reactive
-CSS (`lib/diagram-roles.ts` + `app/globals.css`) — not relevant when
-writing D2 source.
+These hexes are **semantic keys, not the appearance that ships.** Write
+them in D2 source exactly as shown above — `lib/diagram-palette.ts` maps
+each authored fill to a brighter display fill, a deep stroke, and a bold
+near-black label at render time (rewriting the rendered SVG's `fill`
+attributes directly), and the diagram canvas is always a fixed light
+"paper" background in both themes. See the design spec's
+[§5.3 "Authored hex becomes a semantic key"](docs/superpowers/specs/2026-08-27-visual-design-system-refresh-design.md)
+for the full mapping and rationale. A node using a fill hex the
+transform doesn't recognize is left exactly as authored, so don't
+invent new hexes for these six roles — reuse the values above.
 
-Always pair a colored fill with `style.font-color: "#ffffff"` — every
-role color above is dark/saturated enough that white label text is the
-only choice that stays legible. Reference `lib/diagram-icons.ts`'s
-`DIAGRAM_ICONS` map for the matching icon per role rather than sourcing
-a new one per lesson. Local icon data URIs must be quoted in D2 source
-(`icon: "data:image/svg+xml;base64,..."`) — an unquoted value breaks
-D2's parser on the `:`/`+`/`=` characters inside the base64 payload.
-D2's SVG output is static (not theme-reactive like Mermaid's
-class-based role coloring) — use the fill hex directly, the same value
-in both light and dark mode; the palette above is chosen to stay
-legible against either.
+Always pair a colored fill with `style.font-color: "#ffffff"` — this is
+now load-bearing, not just a legibility choice: the retint transform
+scans rendered `<text>` elements for `fill="#ffffff"` to find node
+labels and rewrite them to the display label color, so a node authored
+with any other font color won't get retinted correctly. Reference
+`lib/diagram-icons.ts`'s `DIAGRAM_ICONS` map for the matching icon per
+role rather than sourcing a new one per lesson. Local icon data URIs
+must be quoted in D2 source (`icon: "data:image/svg+xml;base64,..."`)
+— an unquoted value breaks D2's parser on the `:`/`+`/`=` characters
+inside the base64 payload.
 
 **Standard chrome for every colored D2 node** (architecture and class
 alike) — this is what gives the diagrams a bold, ByteByteGo-style flat
