@@ -44,8 +44,11 @@ describe("content.ts", () => {
     expect(lld?.items).toEqual([]);
 
     const caseStudies = nav.find((s) => s.title === "Case Studies");
-    expect(caseStudies?.items).toEqual([
-      { label: "Ticketmaster (HLD)", href: "/case-studies/ticketmaster/hld" },
+    expect(caseStudies?.groups).toEqual([
+      {
+        title: "Ticketmaster",
+        items: [{ label: "HLD", href: "/case-studies/ticketmaster/hld" }],
+      },
     ]);
   });
 

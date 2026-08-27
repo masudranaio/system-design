@@ -7,9 +7,15 @@ export interface NavLink {
   href: string;
 }
 
+export interface NavGroup {
+  title: string;
+  items: NavLink[];
+}
+
 export interface NavSection {
   title: string;
   items: NavLink[];
+  groups?: NavGroup[];
 }
 
 export interface Lesson {
@@ -45,6 +51,20 @@ function readTitle(filePath: string, fallback: string): string {
   return typeof data.title === "string" ? data.title : fallback;
 }
 
+const CASE_STUDY_NAME_OVERRIDES: Record<string, string> = {
+  "chat-whatsapp": "Chat/WhatsApp",
+};
+
+function caseStudyDisplayName(slug: string): string {
+  return (
+    CASE_STUDY_NAME_OVERRIDES[slug] ??
+    slug
+      .split("-")
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(" ")
+  );
+}
+
 export function buildNavTree(contentRoot: string): NavSection[] {
   const conceptSections: NavSection[] = CONCEPT_SECTIONS.map(
     ({ dir, title, hrefPrefix }) => {
@@ -59,33 +79,31 @@ export function buildNavTree(contentRoot: string): NavSection[] {
   );
 
   const caseStudiesDir = path.join(contentRoot, "04-case-studies");
-  const caseStudyItems: NavLink[] = fs.existsSync(caseStudiesDir)
+  const caseStudyGroups: NavGroup[] = fs.existsSync(caseStudiesDir)
     ? fs
         .readdirSync(caseStudiesDir, { withFileTypes: true })
         .filter((entry) => entry.isDirectory())
         .sort((a, b) => a.name.localeCompare(b.name))
-        .flatMap((entry) => {
+        .map((entry) => {
           const systemDir = path.join(caseStudiesDir, entry.name);
-          const links: NavLink[] = [];
+          const items: NavLink[] = [];
           const hldPath = path.join(systemDir, "hld.mdx");
           const lldPath = path.join(systemDir, "lld.mdx");
           if (fs.existsSync(hldPath)) {
-            links.push({
-              label: `${readTitle(hldPath, entry.name)} (HLD)`,
-              href: `/case-studies/${entry.name}/hld`,
-            });
+            items.push({ label: "HLD", href: `/case-studies/${entry.name}/hld` });
           }
           if (fs.existsSync(lldPath)) {
-            links.push({
-              label: `${readTitle(lldPath, entry.name)} (LLD)`,
-              href: `/case-studies/${entry.name}/lld`,
-            });
+            items.push({ label: "LLD", href: `/case-studies/${entry.name}/lld` });
           }
-          return links;
+          return { title: caseStudyDisplayName(entry.name), items };
         })
+        .filter((group) => group.items.length > 0)
     : [];
 
-  return [...conceptSections, { title: "Case Studies", items: caseStudyItems }];
+  return [
+    ...conceptSections,
+    { title: "Case Studies", items: [], groups: caseStudyGroups },
+  ];
 }
 
 export function getLesson(filePath: string): Lesson | null {

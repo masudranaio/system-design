@@ -41,7 +41,7 @@ export default function RootLayout({
             <TopBar />
             <div className="flex flex-1">
               <Sidebar />
-              <main className="flex-1 px-6 py-6">{children}</main>
+              <main className="min-w-0 flex-1 px-6 py-6">{children}</main>
             </div>
           </div>
         </ThemeProvider>
